@@ -1,0 +1,495 @@
+---
+title: "DEP2 Proteomic analysis of `r params$name`"
+author: "David Shechter (based on original script by Maxim Maron) & Joseph DeAngelo"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+df_print: paged
+params:
+  name: "GSK591 MS023 48h Chromatin"
+  protein_data_file: "C:\\Users\\david\\OneDrive\\Manuscripts\\DeAngelo\\2023 PRMT-pICln Axis snRNP Accumulation\\Analysis\\Proteome_FractionatedA549_PRMTi_MaxmiMaron2023\\LabelFree_Master_raw_2023_MaximMaron_PRMTiFractionation.txt"
+  experimental_design_file: "C:\\Users\\david\\OneDrive\\Manuscripts\\DeAngelo\\2023 PRMT-pICln Axis snRNP Accumulation\\Analysis\\Proteome_FractionatedA549_PRMTi_MaxmiMaron2023\\experimental_design\\experimental_design - GSK591 MS023 48h Chromatin.csv"
+  proteins_to_test_file: "C:\\Users\\david\\OneDrive\\Manuscripts\\DeAngelo\\2023 PRMT-pICln Axis snRNP Accumulation\\Analysis\\Proteome_FractionatedA549_PRMTi_MaxmiMaron2023\\proteins_to_test.txt"
+  threshold_for_filtering: 0 #Set to 0 for very stringent
+  fraction_filtered: 0.8 #Set at 0 to allow allow missing values, as close to 1 as possible for no missing values
+  fdr_correction: "Strimmer's qvalue(t)" # options: 'Strimmer's qvalue(t)', 'Strimmer's qvalue(p)', 'BH', 'Storey's qvalue'
+  threshold_cutoff: 0.1
+  threshold_method: "intersect" #(one of "intersect" or "curve")
+  log2fc_cutoff: 0.6
+  n_clusters: 4
+  label_number: 20 
+  column_order: "DMSO.CHR, GSK.48H.CHR, MS023.48H.CHR"
+  imputation_methods: "knn"
+                    #  If you want to use one for MAR and another for MNAR, then separate them by an underscore
+                    # Imputation function for MAR (knn, bpca, RF)
+                    # imputation function for MNAR (MinProb and GSimp (a machine learning approach in DEP2))
+                    # all options are: one of “QRILC”, “bpca”, “knn”, “MLE”, “MinDet”, “MinProb”, “man”, “min”, “zero”, “mixed”, “nbavg”, “RF”, “GSimp”
+  perform_post_analysis: TRUE
+  save_outputs: TRUE
+  output_dir: "C:\\Users\\david\\OneDrive\\Manuscripts\\DeAngelo\\2023 PRMT-pICln Axis snRNP Accumulation\\Analysis\\Proteome_FractionatedA549_PRMTi_MaxmiMaron2023\\DE_output\\"
+  
+---
+
+```{r setup, include = FALSE}
+
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=100), tidy=TRUE)
+
+library(DEP2)
+library(dplyr)
+library(tidyverse)
+library(rio)
+library(ggplot2)
+library(viridisLite)
+library(kableExtra)
+library(knitr)
+library(enrichplot)
+library(clusterProfiler)
+library(GOSemSim)
+library(enrichplot)
+
+# Ensure the output directory exists, if not make it
+output_dir <- params$output_dir
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+}
+```
+
+
+```{r load data, include = FALSE}
+
+# Function to read data based on file extension
+read_data <- function(file) {
+  ext <- tools::file_ext(file)
+  switch(ext,
+         csv = read.csv(file, header = TRUE),
+         tsv = read_tsv(file),
+         txt = read_tsv(file),
+         xlsx = read_excel(file),
+         stop("Unsupported file type"))
+}
+
+# Load the protein data file
+
+data <- read_data(params$protein_data_file)
+
+# Convert NAs to 0 and select relevant columns (e.g. the data columns all need to have an underscore which indicates that they have replicates)
+data[, grep('_', colnames(data))][is.na(data[, grep('_', colnames(data))])] <- 0
+
+# Filter the data dataframe to keep only the columns that match "Description", "Accession", "Symbol", or those containing underscores (_), makes it smaller
+data <- data[c(grep('Description|Accession|Symbol|_', colnames(data)))]
+
+# If the "Symbol" column exists, assign the values of the "Symbol" column to the "Description" column.
+#If the "Symbol" column does not exist, extract the gene name from the "Description" column using a regular expression. This expression looks for the text after GN= and before the next space, and assigns it to the "Description" column.
+
+if ("Symbol" %in% colnames(data)) {
+  data$Description <- data$Symbol
+} else {
+  data$Description <- sub(".*GN=([^[:space:]]+).*", "\\1", data$Description)
+}
+
+
+# Load the experimental design file
+experimental_design <- read.csv(params$experimental_design_file, header = TRUE)
+
+# Ensure unique protein names
+data.unique <- make_unique(data, "Description", "Accession", delim = ";")
+
+# Generate a SummarizedExperiment object
+data_se <- make_se(data.unique, grep("_([^_]+)$", colnames(data)), experimental_design)
+
+# Make sure all NAs are gone
+NAiszero(data_se)
+
+#Order columns
+#Order contrasts, first split the params column order
+  
+ #params$column_order  column_order <- unlist(strsplit(params$column_order, ",\\s*"))
+#  Order_cols(data_se, column_order , order_column = "condition")
+
+```
+
+```{r data QC }
+
+knit_print(paste0("## DATA QC ##"))
+
+
+# Plot the frequency of identified proteins across samples
+plot_frequency(data_se)
+
+# Filter the data based on the parameters
+data_filt <- filter_se(data_se, thr = params$threshold_for_filtering, fraction = params$fraction_filtered) 
+
+# Plot the frequency of identified proteins across samples
+plot_frequency(data_filt)
+
+# Plot the number of identified proteins per sample
+plot_numbers(data_filt)
+
+# Plot the overlap of protein identifications between samples
+plot_coverage(data_filt)
+
+# Plot the missing values across samples
+plot_missval(data_filt)
+
+# Plot the intensity distributions before and after normalization
+plot_detect(data_filt)
+
+```
+
+
+```{r data normalization, warning = FALSE }
+
+# Normalize the data using variance stabilization
+data_norm <- normalize_vsn(data_filt)
+
+# Plot mean versus standard deviation to visualize normalization
+meanSdPlot(data_norm)
+
+# Visualize normalization by boxplots for all samples before and after normalization
+plot_normalization(data_filt, data_norm)
+
+```
+
+```{r data imputation, warning = FALSE}
+
+# Identify proteins with missing values in all replicates of at least one condition
+proteins_MNAR <- get_df_long(data_norm) %>%
+  group_by(name, condition) %>%
+  summarize(NAs = all(is.na(intensity))) %>%
+  filter(NAs) %>%
+  pull(name) %>%
+  unique()
+MNAR <- names(data_norm) %in% proteins_MNAR
+
+# Split the imputation methods parameter into a list
+imputation_methods <- strsplit(params$imputation_methods, ",")[[1]]
+
+# ID each individual parameter (if 2)
+method_parts <- strsplit(imputation_methods, "_")[[1]]
+ 
+#Determine if single or mixed imputation
+
+ if (length(method_parts) == 1) {
+    imputed_se <- impute(data_norm, fun = method_parts[1])
+    
+  } else if (length(method_parts) == 2) {
+    imputed_se <- impute(data_norm, fun = "mixed", randna = !MNAR, mar = method_parts[1], mnar = method_parts[2])
+  }
+  # Dynamically name the imputed SummarizedExperiment object
+  assign(paste0("imputed_se_", imputation_methods), imputed_se)
+
+
+   cat("## Data Imputation Method: ", imputation_methods, "##\n")
+  imputed_se <- get(paste0("imputed_se_", imputation_methods))
+  imp_plot <- plot_imputation(data_filt, data_norm, imputed_se)
+  print(imp_plot)
+
+
+```
+### Differential Abundance Analysis ###
+
+
+```{r differential expression, include = FALSE, warning = FALSE}
+
+
+# Function to perform differential enrichment analysis
+DE_analysis <- function(se, fdr.type = params$fdr_correction, lfc = params$log2fc_cutoff, alpha = params$threshold_cutoff, thresholdmethod = params$threshold_method ) {
+  result <- se %>%
+    test_diff(type = "all", fdr.type = fdr.type) %>%
+    add_rejections(lfc = lfc, alpha = alpha, thresholdmethod = params$threshold_method)
+  
+
+  return(result)
+}
+
+# Perform Differential Expression Test
+
+  cat("### Imputation Method:", imputation_methods, "###\n")
+  cat("FDR Correction:", params$fdr_correction, "\n")
+
+  de_se <- test_diff(imputed_se, type = "all", fdr.type = params$fdr_correction)
+  de_se <- add_rejections(de_se, lfc = params$log2fc_cutoff, alpha = params$threshold_cutoff, thresholdmethod = params$threshold_method)
+ 
+  cat("P-val Histogram")
+  
+  # generate a results table for subsequent analysis
+  data_results <- get_results(de_se)
+
+  # Also Generate a wide data.frame
+  df_wide <- get_df_wide(de_se)
+
+    
+# Generate lists of all contrasts
+  contrasts <- get_contrast(de_se)
+ 
+  
+# Loop through each contrast and generate a p-value histogram
+for (contrast in contrasts) {
+  # Extract p-values for the current contrast
+  p_values <- df_wide[[paste0(contrast, "_p.val")]]
+  
+  # Create the p-value histogram
+  pvalue_histogram <- ggplot(data.frame(p_values), aes(x = p_values)) +
+    geom_histogram(binwidth = 0.05, fill = "gray", color = "black") +
+    theme_minimal() +
+    labs(title = paste("P-value Distribution for", contrast), x = "P-value", y = "Frequency")
+  # Print the p-value histogram
+  print(pvalue_histogram)
+}
+
+
+
+```
+
+
+
+```{r plot Differential Expression Plots and Final Output, warning = FALSE }
+
+  cat("\n---\n")
+
+  cat("### Imputation Method:", imputation_methods, "###\n")
+  
+  
+  # Principal Component Analysis
+  pca_plot <- plot_pca(de_se, x = 1, y = 2, n = 500, point_size = 4) + ggtitle(paste("PCA -", imputation_methods))
+  print(pca_plot)
+
+  #######################################################################  
+  # Correlation plot
+  cor_plot <- plot_cor(de_se, lower = 0, upper = 1, pal = "Blues")
+  #print(cor_plot)
+  
+  # Distance plot
+  dist_plot <- plot_dist(de_se)
+  
+  # print(dist_plot)
+  #######################################################################  
+  
+  #######################################################################
+  # Heatmap
+  heatmap_plot <- plot_heatmap(de_se, type = "centered", kmeans = TRUE, k = params$n_clusters, col_limit = 4, show_row_names = TRUE, clustering_distance = "kendall", seed = 123, cluster_column = F)
+  # print(heatmap_plot)
+  
+  #save Heatmap
+ if (params$save_output) {
+      heatmap_filename <- file.path(output_dir,"\\", paste0("Heatmap_", params$name, "_Imputation-", imputation_methods, "_Cutoff-", params$threshold_cutoff, "_StatTest-", params$fdr_correction, "_DEP2.pdf"))
+      pdf(heatmap_filename, width = 10, height = 8)
+      print(heatmap_plot)
+      dev.off()
+      }
+ 
+  #######################################################################
+  
+
+  #######################################################################
+  #Volcano Plot
+  # contrasts previously defined
+  # Generate volcano plots for each contrast
+   for (contrast in contrasts) {
+      volcano_plot <- plot_volcano(de_se, contrast = contrast, label_size = 5, add_names = TRUE, x_symmetry = TRUE, add_threshold_line = params$threshold_method, fcCutoff = params$log2fc_cutoff)
+      print(volcano_plot)
+    
+      if (params$save_output) {  
+    ggsave(filename = file.path(output_dir, paste0("Volcano_", contrast, "_Imputation_", imputation_methods, "_StatTest_", params$fdr_correction, "_DEP2.pdf")), plot = volcano_plot, width = 8, height = 8) }
+  }
+  #######################################################################
+  
+  #######################################################################
+  #Output Final data to csv
+  #First, generate a results table
+  #DONE ALREADY IN DE SECTION: data_results <- get_results(de_se)
+
+  # Generate a wide data.frame
+  #DONE ALREADY IN DE SECTION: df_wide <- get_df_wide(de_se)
+
+  if (params$save_output) {
+       for (contrast in contrasts) {
+        # Save results to CSV
+         print(contrast)
+        write.csv(df_wide, file.path(output_dir,"\\", paste0("Heatmap_", params$name, "_Imputation-", imputation_methods, "_Cutoff-", params$threshold_cutoff, "_StatTest-", params$fdr_correction, "_DEP2-limma.csv")), row.names = FALSE)
+       }
+  }
+  
+  #######################################################################
+  
+  #######################################################################
+  # Extract the number of significantly altered proteins for each contrast
+
+  
+  # Extract columns ending with "_significant"
+significant_columns <- grep("_significant$", names(data_results), value = TRUE)
+
+# Summarize the number of significant proteins for each contrast
+significant_proteins_summary <- sapply(significant_columns, function(col) {
+  sum(data_results[[col]], na.rm = TRUE)
+})
+
+# Convert to data frame for display
+significant_proteins_summary <- data.frame(
+  Contrast = gsub("_significant$", "", significant_columns),
+  Num_Significant_Proteins = significant_proteins_summary
+)
+
+# Output the table using kable
+kable(significant_proteins_summary, caption = "Number of Significantly Altered Proteins per Contrast") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+################################################################
+  
+```
+
+
+```{r single protein analysis}
+
+#This chunk will output each condition log2CenteredIntensity plots and data for selected proteins
+
+# Define a function to extract centered log2 intensity values and save to CSV
+extract_centered_values <- function(se, protein_name, output_dir) {
+  # Check if the protein is in the dataset
+  if (!(protein_name %in% rownames(se))) {
+    stop(paste("Protein", protein_name, "not found in the dataset."))
+  }
+
+  # Extract the assay data for the protein
+  assay_data <- assay(se[protein_name, ])
+
+  # Calculate the mean intensity for the protein
+  means <- rowMeans(assay_data, na.rm = TRUE)
+  
+  # Center the intensities by subtracting the mean intensity from each value
+  centered_data <- assay_data - means
+
+  # Convert the centered data to a data frame
+  centered_df <- as.data.frame(t(centered_data))
+  
+  # Get the condition information
+  conditions <- colData(se)$condition
+  
+  # Add the condition information to the data frame
+  centered_df$condition <- conditions
+  
+  # Reshape the data to have one row per condition with replicates in separate columns
+  centered_long <- pivot_longer(centered_df, cols = -condition, names_to = "replicate", values_to = "log2_centered_intensity")
+  centered_wide <- centered_long %>%
+    group_by(condition) %>%
+    mutate(replicate = paste0("replicate_", row_number())) %>%
+    pivot_wider(names_from = replicate, values_from = log2_centered_intensity)
+
+  # Ensure the output directory exists
+  dir_create(output_dir)
+  
+  # Create the output filename
+  output_filename <- paste0(protein_name,"_", params$name,"_log2CenteredIntensity.csv")
+  output_filepath <- file.path(output_dir, output_filename)
+
+  # Add the protein name to the data frame for export
+  centered_wide <- centered_wide %>%
+    mutate(protein_name = protein_name)
+
+  # Save the result to a CSV file
+  if (params$save_output) { write.csv(centered_wide, output_filepath, row.names = FALSE) }
+  
+  return(centered_wide)
+}
+
+# Read the CSV file containing the protein names without headers
+proteins_to_test <- read_tsv(params$proteins_to_test_file, col_names = FALSE)
+
+# Assuming the single column is the protein name
+colnames(proteins_to_test) <- c("protein_name")
+
+# Specify the output directory
+output_dir <- "single_protein_analysis"
+
+# Loop through each protein in the CSV file and process it
+for (i in 1:nrow(proteins_to_test)) {
+  protein_name <- proteins_to_test$protein_name[i]
+  
+  # Generate the plot and extract centered values
+  tryCatch({
+    plot_single(de_se, proteins = c(protein_name), type = "centered")
+    
+    centered_values <- extract_centered_values(de_se, protein_name, output_dir)
+    
+    # Print the result for verification
+    print(centered_values)
+  }, error = function(e) {
+    message("Error processing protein ", protein_name, ": ", e$message)
+  })
+}
+  
+  
+```
+
+  
+  
+```{r Time Course clustering, eval = FALSE}
+  
+  
+  ########################
+  # Time course cluster analysis
+  tc_cluster <- get_tc_cluster(
+  de_se,
+  ht_mat,
+  exp_design,
+  groupby = "condition",
+  group_order = NULL,
+  k = 3,
+  dist = "euclidean",
+  color = c("RdBu"),
+  col_limit = 4,
+  row_font_size = 0,
+  col_font_size = 5,
+  heatmap_width = 5,
+  heatmap_height = 2,
+  seed = NULL
+)
+
+print(tc_cluster)
+
+```
+
+
+
+```{r ORA analysis, eval = params$perform_post_analysis}
+
+if (params$perform_post_analysis) {
+
+  #############GO
+res_ora_GO <- DEP2::test_ORA(de_se, by_contrast = T, , species = "Human", type = "GO")
+
+res_ora_GO_filt <- get_ORA_result(res_ora_GO, ont ="GOALL", pvalueCutoff = 0.05, simplify = TRUE, simplify.cutoff = 0.6)
+
+#s_res_ora_GO <- clusterProfiler::simplify(res_ora_GO, cutoff = 0.6)
+enrich_plotGO <- enrichplot::dotplot(res_ora_GO_filt)
+
+
+print(enrich_plotGO)
+
+    if (params$save_output) {
+      enrich_plotGO_filename <- file.path(output_dir,"\\", paste0("clusterProfilerGO_", params$name, "_Imputation-", imputation_methods, "_Cutoff-", params$threshold_cutoff, "_StatTest-", params$fdr_correction, "_DEP2.pdf"))
+      pdf(enrich_plotGO_filename, width = 12, height = 8)
+      print(enrich_plotGO)
+      dev.off()
+    }
+
+#############KEGG
+res_ora_KEGG <- DEP2::test_ORA(de_se, by_contrast = T, species = "Human", type = "KEGG")
+
+enrich_plotKEGG <-enrichplot::dotplot(res_ora_KEGG)
+
+print(enrich_plotKEGG)
+
+
+  if (params$save_output) {
+      enrich_plotKEGG_filename <- file.path(output_dir,"\\", paste0("clusterProfilerKEGG_", params$name, "_Imputation-", imputation_methods, "_Cutoff-", params$threshold_cutoff, "_StatTest-", params$fdr_correction, "_DEP2.pdf"))
+                                          
+      pdf(enrich_plotKEGG_filename, width = 12, height = 8)
+      print(enrich_plotKEGG)
+      dev.off()
+      }
+}
+#res_gsea <- DEP2::test_GSEA(de_se, by_contrast = F, species = "Human",type = "GO")
+
+
+```
+
