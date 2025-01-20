@@ -1,0 +1,10 @@
+{
+    "salmon_version": "1.9.0",
+    "geneMap": "dm6.hg38.gtf",
+    "threads": "6",
+    "libType": "ISR",
+    "targets": "dm6.hg38.transcripts.gffread.fa",
+    "alignments": "DMSO_chromatin_rep2.Aligned.toTranscriptome.out.bam",
+    "output": "DMSO_chromatin_rep2",
+    "auxDir": "aux_info"
+}

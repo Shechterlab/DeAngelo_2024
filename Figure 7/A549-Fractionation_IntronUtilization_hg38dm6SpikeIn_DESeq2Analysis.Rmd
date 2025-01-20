@@ -3,7 +3,7 @@ output:
   html_document:
     df_print: paged
   pdf_document: default
-author: "David Shechter and Joe DeAngelo"
+author: "David Shechter, Maxim Maron, and Joe DeAngelo"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 ---
 
@@ -29,9 +29,9 @@ process_data <- function(file_path, type) {
            ExonID = case_when(type == "exon" ~ Geneid, TRUE ~ NA_character_),
            IntronID = case_when(type == "intron" ~ Geneid, TRUE ~ NA_character_)) %>%
     dplyr::select(-Geneid)
-  # Apply cutoff of 5 counts in any 3 samples (e.g. should be present in at least one fraction/condition)
+  # Apply cutoff of 30 counts in any 3 samples (e.g. should be truly present in at least one fractions/conditions   )
   data <- data %>%
-    dplyr::filter(rowSums(dplyr::select(., starts_with("DMSO") | starts_with("GSK591")) >= 5) >= 3)
+    dplyr::filter(rowSums(dplyr::select(., starts_with("DMSO") | starts_with("GSK591")) >= 30) >= 3)
   return(data)
 }
 
@@ -129,7 +129,7 @@ intron_summary <- create_intron_summary(intron_data)
 
 write.csv(intron_summary, file = "A549-Fractionation_IntronExon-featureCounts_intron_summary.csv", row.names = FALSE)
 
-# Create an "all" table from all featureCount expressed genes (cutoff > 5 counts)
+# Create an "all" table from all featureCount expressed genes (cutoff > 20 counts)
 all_intron_lengths <- intron_data %>%
   dplyr::select(IntronID, Length) %>%
   dplyr::distinct() %>%
@@ -392,8 +392,9 @@ create_volcano_plot <- function(data, title) {
 
 # Function to analyze intron enrichment and plot histogram
 analyze_intron_enrichment <- function(res_data, intron_data, output_name, padj_cutoff = 0.05, log2fc_cutoff = 0.58) {
-  # Convert DESeqResults to a data frame for dplyr compatibility
-  res_df <- as.data.frame(res_data)
+  # Convert DESeqResults to a data frame for dplyr compatibility, ensure that IntronID is propagated to res_df
+    res_df <- as.data.frame(res_data) %>%
+  tibble::rownames_to_column(var = "IntronID")
   
   # Filter for significant introns
   sig_introns <- res_df %>%
@@ -443,8 +444,9 @@ analyze_intron_enrichment <- function(res_data, intron_data, output_name, padj_c
 
 # Function to extract significantly enriched introns and perform length analysis
 analyze_intron_length <- function(res_data, intron_data, output_prefix, fraction_name) {
-  # Convert DESeqResults to a data frame for dplyr compatibility
-  res_df <- as.data.frame(res_data)
+  # Convert DESeqResults to a data frame for dplyr compatibility, ensure that IntronID is propagated to res_df
+  res_df <- as.data.frame(res_data)%>%
+  tibble::rownames_to_column(var = "IntronID")
   
   # Function to extract significantly enriched introns for a given fraction, remove dm6 introns
   extract_sig_introns <- function(res_data, intron_data, fraction_name) {
@@ -520,7 +522,7 @@ analyze_intron_length <- function(res_data, intron_data, output_prefix, fraction
   ggsave(paste0(output_prefix, "_Log10_Length_Distribution_", fraction_name, ".pdf"), plot = violin_length_plot, width = 10, height = 7)
 }
 
-# Example usage of the DESeq2 analysis function for intron data
+# DESeq2 analysis function for intron data
 call_DESeq2_analysis <- function(test_condition, reference_condition, prefix) {
   # Call the DESeq2 analysis function
   res <- run_deseq2_intron_analysis(dds, test_condition, reference_condition, prefix)
@@ -540,15 +542,16 @@ call_DESeq2_analysis <- function(test_condition, reference_condition, prefix) {
 ```{r DESeq2_Cyto_vs_Cyto GSK591 vs DMSO Introns}
 test_condition <- "GSK591_Cytoplasm"
 reference_condition <- "DMSO_Cytoplasm"
-prefix <- test_condition
+prefix <- paste0(test_condition, "_vs_", reference_condition)
 
 call_DESeq2_analysis(test_condition, reference_condition, prefix)
 
 ```
+
 ```{r DESeq2_Nuc_vs_Nuc GSK591 vs DMSO Introns}
 test_condition <- "GSK591_Nucleoplasm"
 reference_condition <- "DMSO_Nucleoplasm"
-prefix <- test_condition
+prefix <- paste0(test_condition, "_vs_", reference_condition)
 
 call_DESeq2_analysis(test_condition, reference_condition, prefix)
 
@@ -557,7 +560,8 @@ call_DESeq2_analysis(test_condition, reference_condition, prefix)
 ```{r DESeq2_Chromatin_vs_Chromatin GSK591 vs DMSO Introns}
 test_condition <- "GSK591_Chromatin"
 reference_condition <- "DMSO_Chromatin"
-prefix <- test_condition
+prefix <- paste0(test_condition, "_vs_", reference_condition)
+
 
 call_DESeq2_analysis(test_condition, reference_condition, prefix)
 
@@ -567,7 +571,7 @@ call_DESeq2_analysis(test_condition, reference_condition, prefix)
 ```{r DESeq2_DMSO_Chromatin_vs_Cytoplasm  Introns}
 test_condition <- "DMSO_Chromatin"
 reference_condition <- "DMSO_Cytoplasm"
-prefix <- test_condition
+prefix <- paste0(test_condition, "_vs_", reference_condition)
 
 call_DESeq2_analysis(test_condition, reference_condition, prefix)
 
@@ -577,7 +581,8 @@ call_DESeq2_analysis(test_condition, reference_condition, prefix)
 ```{r DESeq2_GSK591_Chromatin_vs_Cytoplasm  Introns}
 test_condition <- "GSK591_Chromatin"
 reference_condition <- "GSK591_Cytoplasm"
-prefix <- test_condition
+prefix <- paste0(test_condition, "_vs_", reference_condition)
+
 
 call_DESeq2_analysis(test_condition, reference_condition, prefix)
 
@@ -585,7 +590,7 @@ call_DESeq2_analysis(test_condition, reference_condition, prefix)
 ```
 
 
-```{r intron_enrichment_analysis, echo=FALSE, message=FALSE, warning=FALSE}
+```{r intron_enrichment_analysis, eval=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
 
 # Function to analyze intron enrichment and plot histogram
 analyze_intron_enrichment <- function(res_data, intron_data, output_name, padj_cutoff = 0.05, log2fc_cutoff = 0.58) {
@@ -637,13 +642,14 @@ analyze_intron_enrichment <- function(res_data, intron_data, output_name, padj_c
 }
 
 # Example usage
-enrichment_data_chromatin <- analyze_intron_enrichment(res_chromatin, intron_data, "Chromatin")
-enrichment_data_chromatin <- analyze_intron_enrichment(res_Nucleoplasm, intron_data, "Nucleoplasm")
-enrichment_data_chromatin <- analyze_intron_enrichment(res_Cytoplasm, intron_data, "Cytoplasm")
+#enrichment_data_chromatin <- analyze_intron_enrichment(res_Chromatin, intron_data, "Chromatin")
+#enrichment_data_chromatin <- analyze_intron_enrichment(res_Nucleoplasm, intron_data, "Nucleoplasm")
+#enrichment_data_chromatin <- analyze_intron_enrichment(res_Cytoplasm, intron_data, "Cytoplasm")
 ```
 
-```{r intron length analysis and comparison}
+```{r intron length analysis and comparison, eval = FALSE}
 
+#function used above
 # Function to extract significantly enriched introns for a given fraction, remove dm6 introns
 extract_sig_introns <- function(res_data, intron_data, fraction_name) {
   res_data %>%

@@ -1,0 +1,10 @@
+{
+    "salmon_version": "1.9.0",
+    "geneMap": "dm6.hg38.gtf",
+    "threads": "6",
+    "libType": "ISR",
+    "targets": "dm6.hg38.transcripts.gffread.fa",
+    "alignments": "GSK591_nucleoplasm_rep2.Aligned.toTranscriptome.out.bam",
+    "output": "GSK591_nucleoplasm_rep2",
+    "auxDir": "aux_info"
+}

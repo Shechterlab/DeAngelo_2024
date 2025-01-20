@@ -1,0 +1,122 @@
+[2024-05-30 22:06:04.014] [jointLog] [info] setting maxHashResizeThreads to 6
+[2024-05-30 22:06:04.014] [jointLog] [info] Fragment incompatibility prior below threshold.  Incompatible fragments will be ignored.
+[2024-05-30 22:06:04.015] [jointLog] [info] numQuantThreads = 3
+[2024-05-30 22:06:06.919] [fileLog] [info] quantification processed 0 fragments so far
+
+[2024-05-30 22:06:06.723] [jointLog] [info] replaced 4 non-ACGT nucleotides with random nucleotides
+[2024-05-30 22:06:09.616] [fileLog] [info] quantification processed 1000000 fragments so far
+
+[2024-05-30 22:06:12.494] [fileLog] [info] quantification processed 2000000 fragments so far
+
+[2024-05-30 22:06:13.817] [jointLog] [info] 
+
+The alignment group queue pool has been exhausted.  4315221 extra fragments were allocated on the heap to saturate the pool.  No new fragments will be allocated
+
+
+[2024-05-30 22:06:22.762] [fileLog] [info] quantification processed 3000000 fragments so far
+
+[2024-05-30 22:06:38.303] [fileLog] [info] quantification processed 4000000 fragments so far
+
+[2024-05-30 22:06:53.499] [fileLog] [info] quantification processed 5000000 fragments so far
+
+[2024-05-30 22:07:07.967] [fileLog] [info] quantification processed 6000000 fragments so far
+
+[2024-05-30 22:07:24.063] [fileLog] [info] quantification processed 7000000 fragments so far
+
+[2024-05-30 22:07:28.196] [fileLog] [info] quantification processed 8000000 fragments so far
+
+[2024-05-30 22:07:32.219] [fileLog] [info] quantification processed 9000000 fragments so far
+
+[2024-05-30 22:07:36.139] [fileLog] [info] quantification processed 10000000 fragments so far
+
+[2024-05-30 22:07:40.056] [fileLog] [info] quantification processed 11000000 fragments so far
+
+[2024-05-30 22:07:43.872] [fileLog] [info] quantification processed 12000000 fragments so far
+
+[2024-05-30 22:07:47.705] [fileLog] [info] quantification processed 13000000 fragments so far
+
+[2024-05-30 22:07:51.626] [fileLog] [info] quantification processed 14000000 fragments so far
+
+[2024-05-30 22:07:55.477] [fileLog] [info] quantification processed 15000000 fragments so far
+
+[2024-05-30 22:07:59.446] [fileLog] [info] quantification processed 16000000 fragments so far
+
+[2024-05-30 22:08:03.417] [fileLog] [info] quantification processed 17000000 fragments so far
+
+[2024-05-30 22:08:07.294] [fileLog] [info] quantification processed 18000000 fragments so far
+
+[2024-05-30 22:08:11.235] [fileLog] [info] quantification processed 19000000 fragments so far
+
+[2024-05-30 22:08:15.164] [fileLog] [info] quantification processed 20000000 fragments so far
+
+[2024-05-30 22:08:19.013] [fileLog] [info] quantification processed 21000000 fragments so far
+
+[2024-05-30 22:08:22.892] [fileLog] [info] quantification processed 22000000 fragments so far
+
+[2024-05-30 22:08:26.795] [fileLog] [info] quantification processed 23000000 fragments so far
+
+[2024-05-30 22:08:30.674] [fileLog] [info] quantification processed 24000000 fragments so far
+
+[2024-05-30 22:08:34.651] [fileLog] [info] quantification processed 25000000 fragments so far
+
+[2024-05-30 22:08:38.644] [fileLog] [info] quantification processed 26000000 fragments so far
+
+[2024-05-30 22:08:39.270] [fileLog] [info] quantification processed 26155224 fragments so far
+
+[2024-05-30 22:08:46.970] [jointLog] [info] Thread saw mini-batch with a maximum of 10.40% zero probability fragments
+[2024-05-30 22:08:46.973] [jointLog] [info] Thread saw mini-batch with a maximum of 10.40% zero probability fragments
+[2024-05-30 22:08:46.973] [jointLog] [info] Thread saw mini-batch with a maximum of 10.30% zero probability fragments
+[2024-05-30 22:08:46.973] [jointLog] [info] 
+
+
+Completed first pass through the alignment file.
+Total # of mapped reads : 26155224
+# of uniquely mapped reads : 9365520
+# ambiguously mapped reads : 16789704
+
+
+
+[2024-05-30 22:08:47.130] [jointLog] [info] Computed 318192 rich equivalence classes for further processing
+[2024-05-30 22:08:47.130] [jointLog] [info] Counted 24408406 total reads in the equivalence classes 
+[2024-05-30 22:08:47.131] [jointLog] [info] starting optimizer
+[2024-05-30 22:08:47.237] [jointLog] [info] Marked 0 weighted equivalence classes as degenerate
+[2024-05-30 22:08:47.253] [jointLog] [info] iteration = 0 | max rel diff. = 4663.08
+[2024-05-30 22:08:48.719] [jointLog] [info] iteration = 100 | max rel diff. = 16.3402
+[2024-05-30 22:08:50.183] [jointLog] [info] iteration = 200 | max rel diff. = 7.5419
+[2024-05-30 22:08:51.646] [jointLog] [info] iteration = 300 | max rel diff. = 4.55815
+[2024-05-30 22:08:53.106] [jointLog] [info] iteration = 400 | max rel diff. = 9.04731
+[2024-05-30 22:08:54.545] [jointLog] [info] iteration = 500 | max rel diff. = 2.38197
+[2024-05-30 22:08:55.993] [jointLog] [info] iteration = 600 | max rel diff. = 0.430869
+[2024-05-30 22:08:57.447] [jointLog] [info] iteration = 700 | max rel diff. = 0.183657
+[2024-05-30 22:08:58.880] [jointLog] [info] iteration = 800 | max rel diff. = 0.32908
+[2024-05-30 22:09:00.324] [jointLog] [info] iteration = 900 | max rel diff. = 0.911548
+[2024-05-30 22:09:01.762] [jointLog] [info] iteration = 1000 | max rel diff. = 0.143877
+[2024-05-30 22:09:03.203] [jointLog] [info] iteration = 1100 | max rel diff. = 0.0868143
+[2024-05-30 22:09:04.648] [jointLog] [info] iteration = 1200 | max rel diff. = 0.62452
+[2024-05-30 22:09:06.093] [jointLog] [info] iteration = 1300 | max rel diff. = 0.467715
+[2024-05-30 22:09:07.551] [jointLog] [info] iteration = 1400 | max rel diff. = 0.30408
+[2024-05-30 22:09:09.023] [jointLog] [info] iteration = 1500 | max rel diff. = 3.6425
+[2024-05-30 22:09:10.452] [jointLog] [info] iteration = 1600 | max rel diff. = 0.240699
+[2024-05-30 22:09:11.887] [jointLog] [info] iteration = 1700 | max rel diff. = 0.111329
+[2024-05-30 22:09:13.330] [jointLog] [info] iteration = 1800 | max rel diff. = 0.0437032
+[2024-05-30 22:09:14.757] [jointLog] [info] iteration = 1900 | max rel diff. = 0.225319
+[2024-05-30 22:09:16.194] [jointLog] [info] iteration = 2000 | max rel diff. = 1.47854
+[2024-05-30 22:09:17.646] [jointLog] [info] iteration = 2100 | max rel diff. = 0.0146473
+[2024-05-30 22:09:19.043] [jointLog] [info] iteration = 2200 | max rel diff. = 0.0820849
+[2024-05-30 22:09:20.390] [jointLog] [info] iteration = 2300 | max rel diff. = 0.0132325
+[2024-05-30 22:09:21.781] [jointLog] [info] iteration = 2400 | max rel diff. = 0.251802
+[2024-05-30 22:09:23.233] [jointLog] [info] iteration = 2500 | max rel diff. = 0.207236
+[2024-05-30 22:09:24.653] [jointLog] [info] iteration = 2600 | max rel diff. = 0.116473
+[2024-05-30 22:09:26.065] [jointLog] [info] iteration = 2700 | max rel diff. = 0.112804
+[2024-05-30 22:09:27.489] [jointLog] [info] iteration = 2800 | max rel diff. = 0.076749
+[2024-05-30 22:09:28.902] [jointLog] [info] iteration = 2900 | max rel diff. = 0.0610719
+[2024-05-30 22:09:30.292] [jointLog] [info] iteration = 3000 | max rel diff. = 0.175123
+[2024-05-30 22:09:31.691] [jointLog] [info] iteration = 3100 | max rel diff. = 0.735356
+[2024-05-30 22:09:31.717] [jointLog] [info] iteration = 3103 | max rel diff. = 0.00874201
+[2024-05-30 22:09:31.732] [jointLog] [info] finished optimizer
+[2024-05-30 22:09:31.732] [jointLog] [info] writing output
+[2024-05-30 22:09:33.349] [jointLog] [info] Computing gene-level abundance estimates
+[2024-05-30 22:10:06.733] [jointLog] [info] There were 261909 transcripts mapping to 78485 genes
+[2024-05-30 22:10:06.733] [jointLog] [info] NOTE: We recommend using tximport (https://bioconductor.org/packages/release/bioc/html/tximport.html) for aggregating transcript-level salmon abundance estimates to the gene level.  It is more versatile, exposes more features, and allows considering multi-sample information during aggregation.
+[2024-05-30 22:10:07.045] [jointLog] [info] Aggregating expressions to gene level
+[2024-05-30 22:10:07.227] [jointLog] [info] done
