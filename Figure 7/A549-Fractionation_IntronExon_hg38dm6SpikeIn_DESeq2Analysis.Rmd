@@ -1,0 +1,1189 @@
+---
+title: "A549 Intron/Exon analysis, DESeq2 Analysis with hg38 and dm6 spike-in"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+author: "David Shechter, Maxim Maron, and Joe DeAngelo"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+*This R Markdown script is a comprehensive analysis pipeline for comparing intron and exon RNA-seq data across A549 cell fractionation and the effects of PRMT5 inhibition (GSK591). The pipeline integrates hg38 (human genome) and dm6 (Drosophila spike-in controls) for normalization*
+
+This analysis requires STAR mapping to a joint hg38-dm6 genome and a pre-built gtf with "dm6" in the Chromsome column for any control spike-in gene. These files are available at [www.github.com/shechterlab](www.github.com/shechterlab)
+
+```{r setup, include=FALSE}
+
+# Load necessary libraries
+library(tidyverse)
+library(data.table)
+library(DESeq2)
+library(ggrepel)
+library(biomaRt) # for intron position analysis
+library(dplyr)
+library(ggpointdensity)
+library(viridis)
+
+# Set the WD here
+working_dir <- 'C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 7/'
+knitr::opts_knit$set(root.dir = normalizePath(working_dir))
+setwd(working_dir)
+getwd()
+
+# Create output directory
+output_dir <- paste0(working_dir, "Output/")
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir)
+  }
+
+# Define a function to read and process the data
+process_data <- function(file_path, type) {
+  data <- fread(file_path)
+  
+  # Extract the gene name and IDs
+  data <- data %>%
+    mutate(GeneName = sub(":.*", "", Geneid),
+           ExonID = case_when(type == "exon" ~ Geneid, TRUE ~ NA_character_),
+           IntronID = case_when(type == "intron" ~ Geneid, TRUE ~ NA_character_)) %>%
+    dplyr::select(-Geneid)
+  # Apply cutoff of 20 counts in any 3 samples (e.g. should be truly present in at least one fraction and condition)
+  data <- data %>%
+    dplyr::filter(rowSums(dplyr::select(., starts_with("DMSO") | starts_with("GSK591")) >= 20) >= 3)
+  return(data)
+}
+
+# Read the data
+intron_data <- process_data(paste0(working_dir,'featureCounts_IntronsExons/Intron_Count_hg38_dm6_A549_frac_PRMTi_s2.txt'), "intron")
+exon_data <- process_data(paste0(working_dir,'featureCounts_IntronsExons/Exon_Count_hg38_dm6_A549_frac_PRMTi_s2.txt'), "exon")
+
+
+# Read hg38 intron lengths, although this won't actually be used as it is not limited to expressed genes
+#hg38_intron_lengths <- read.csv("C:/Users/david/OneDrive/Bioinformatics/PRMTi/2024-05_RNAseq_PRMT5i-Fractionation/IntronExonAnalysis/hg38dm6-SpikeInAnalysis/hg38_gencode_intron_lengths.txt", header = FALSE, col.names = c("Length"))
+
+
+```
+
+```{r Create gene summary table}
+
+# Create a summary table for genes
+create_gene_summary <- function(exon_data, intron_data) {
+  # Actual reads per condition/replicate
+  exon_long <- exon_data %>%
+    pivot_longer(cols = starts_with("DMSO") | starts_with("GSK591"), names_to = "Condition_Replicate", values_to = "ExonReadCount")
+  
+  intron_long <- intron_data %>%
+    pivot_longer(cols = starts_with("DMSO") | starts_with("GSK591"), names_to = "Condition_Replicate", values_to = "IntronReadCount")
+  
+  # Count the number of exons and introns per gene
+  exon_count <- exon_data %>%
+    group_by(GeneName) %>%
+    summarize(ExonCount = n(), .groups = 'drop')
+  
+  intron_count <- intron_data %>%
+    group_by(GeneName) %>%
+    summarize(IntronCount = n(), .groups = 'drop')
+  
+  # Average reads per condition
+  exon_avg <- exon_long %>%
+    separate(Condition_Replicate, into = c("Condition", "Replicate"), sep = "_rep") %>%
+    group_by(GeneName, Condition) %>%
+    summarize(avgExon_reads = mean(ExonReadCount), .groups = 'drop')
+  
+  intron_avg <- intron_long %>%
+    separate(Condition_Replicate, into = c("Condition", "Replicate"), sep = "_rep") %>%
+    group_by(GeneName, Condition) %>%
+    summarize(avgIntron_reads = mean(IntronReadCount), .groups = 'drop')
+  
+  # Join exon and intron summaries
+  gene_summary <- inner_join(exon_avg, intron_avg, by = c("GeneName", "Condition"))
+  
+  # Add exon and intron counts
+  gene_summary <- gene_summary %>%
+    left_join(exon_count, by = "GeneName") %>%
+    left_join(intron_count, by = "GeneName")
+  
+  # Calculate IntronExon_Ratio for each condition, add 1 to make sure there is no divide by 0
+  gene_summary <- gene_summary %>%
+    mutate(IntronExon_Ratio = avgIntron_reads / (avgExon_reads + 1))
+  
+  return(gene_summary)
+}
+
+gene_summary <- create_gene_summary(exon_data, intron_data)
+
+# Split condition into Treatment and Fraction
+gene_summary <- gene_summary %>%
+  separate(Condition, into = c("Treatment", "Fraction"), sep = "_")
+
+# Ensure the order of levels for the Fraction factor
+gene_summary$Fraction <- factor(gene_summary$Fraction, levels = c("Chromatin", "Nucleoplasm", "Cytoplasm"))
+
+ # Save the gene summary table to a CSV file
+write.csv(gene_summary, file = paste0(output_dir, 'A549-Fractionation_IntronExon-featureCounts_gene_summary.csv'), row.names = FALSE)
+
+
+```
+
+```{r Create intron summary table}
+
+# Create a summary table for introns
+create_intron_summary <- function(intron_data) {
+  # Pivot the data to long format
+  intron_long <- intron_data %>%
+    pivot_longer(cols = starts_with("DMSO") | starts_with("GSK591"), names_to = "Condition_Replicate", values_to = "IntronReadCount") %>%
+    separate(Condition_Replicate, into = c("Condition", "Replicate"), sep = "_rep")
+
+  # Calculate average reads per condition for each intron
+  intron_summary <- intron_long %>%
+    group_by(IntronID, Condition) %>%
+    summarize(avgIntron_reads = mean(IntronReadCount), Length = dplyr::first(Length), .groups = 'drop')
+
+
+  return(intron_summary)
+}
+
+intron_summary <- create_intron_summary(intron_data)
+
+write.csv(intron_summary, file = paste0(output_dir, 'A549-Fractionation_IntronExon-featureCounts_intron_summary.csv'), row.names = FALSE)
+
+# Create an "all" table from all featureCount expressed genes (cutoff > 20 counts)
+all_intron_lengths <- intron_data %>%
+  dplyr::select(IntronID, Length) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(Fraction = "All_featureCounts")
+
+
+```
+
+***Violin plot of intron/exon ratio, Per Condition ***
+
+```{r violin plot of intron/exon ratio per condition}
+
+# Ensure the order of levels for the Fraction factor in the gene_summary data frame
+gene_summary$Fraction <- factor(gene_summary$Fraction, levels = c("Chromatin", "Nucleoplasm", "Cytoplasm"))
+
+# Apply natural log transformation to the intron/exon ratio
+gene_summary <- gene_summary %>%
+  dplyr::filter(!grepl("dm6", GeneName)) %>%
+  dplyr::mutate(Log_IntronExon_Ratio = log1p(IntronExon_Ratio))
+
+# Perform KS test for each fraction between DMSO and GSK591
+ks_results <- gene_summary %>%
+  group_by(Fraction) %>%
+  summarize(ks_p_value = ks.test(Log_IntronExon_Ratio[Treatment == "DMSO"],
+                                 Log_IntronExon_Ratio[Treatment == "GSK591"])$p.value)
+
+fraction_results <- gene_summary %>%
+  group_by(Fraction) %>%
+  summarize(
+    ks_p_value = ks.test(Log_IntronExon_Ratio[Treatment == "DMSO"],
+                         Log_IntronExon_Ratio[Treatment == "GSK591"])$p.value,
+    ks_D = ks.test(Log_IntronExon_Ratio[Treatment == "DMSO"],
+                   Log_IntronExon_Ratio[Treatment == "GSK591"])$statistic,
+    wilcox_p_value = wilcox.test(Log_IntronExon_Ratio[Treatment == "DMSO"],
+                                 Log_IntronExon_Ratio[Treatment == "GSK591"])$p.value,
+    wilcox_statistic = wilcox.test(Log_IntronExon_Ratio[Treatment == "DMSO"],
+                                   Log_IntronExon_Ratio[Treatment == "GSK591"])$statistic
+  )
+
+# Merge KS test results with the gene_summary for labeling
+gene_summary <- gene_summary %>%
+  left_join(ks_results, by = "Fraction")
+
+# Reverse the levels of Fraction to place Chromatin at the bottom
+gene_summary$Fraction <- factor(gene_summary$Fraction, levels = c("Cytoplasm", "Nucleoplasm", "Chromatin"))
+
+# Adjust the order of Treatment within each group
+gene_summary <- gene_summary %>%
+  mutate(Treatment = factor(Treatment, levels = c("DMSO", "GSK591"))) %>%
+  arrange(Fraction, Treatment)
+
+# Create the horizontal violin plot
+violin_plot <- ggplot(gene_summary, aes(y = interaction(Fraction, Treatment, lex.order = TRUE), 
+                                        x = Log_IntronExon_Ratio, fill = Treatment)) +
+  geom_violin(trim = FALSE, scale = "width", orientation = "y") +
+  geom_boxplot(width = 0.1, position = position_dodge(0.9), outlier.shape = NA) +
+  scale_fill_manual(values = c("DMSO" = "#AAAAAA", "GSK591" = "#2D8942")) +
+  theme_minimal() +
+  labs(title = "Natural Log-Transformed Distribution of Per Gene Intron/Exon Ratio per Condition and Fraction",
+       y = "Fraction and Treatment",
+       x = "ln(Intron/Exon Ratio + 1)") +
+  geom_text(data = fraction_results, aes(y = 1.5, x = 3,
+                                         label = paste0("Wilcoxon p-value: ", format(wilcox_p_value, digits = 2))),
+            inherit.aes = FALSE, size = 2, color = "black") +
+  theme(
+    axis.text.y = element_text(angle = 0, hjust = 0.5),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),  # Centered Title
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  ) +
+  xlim(-0.1, 3)
+
+
+
+print(violin_plot)
+
+# Save as PNG
+ggsave(paste0(output_dir, 'ln-IntronExon-Ratio_Violin_Plot.png'), plot = violin_plot, width = 10, height = 7)
+
+# Save as PDF
+ggsave(paste0(output_dir, 'ln-IntronExon-Ratio_Violin_Plot.pdf'), plot = violin_plot, width = 10, height = 7)
+
+
+```
+
+
+```{r Volcano Plot Function, INCLUDE = FALSE}
+
+# Function to create volcano plots
+create_volcano_plot <- function(data, title) {
+  data$log10padj <- -log10(data$padj)
+  
+  max_abs_x <- max(abs(data$log2FoldChange)) * 1.4 # give 40% buffer on axes
+  max_y <- max(data$log10padj) * 1.4 # 40% buffer
+  
+  p <- ggplot(data, aes(x = log2FoldChange, y = log10padj)) +
+    geom_point(color = "#BEBEBE", size = 1.5, alpha = 1, shape = 16) +
+    geom_text_repel(data = subset(data, log10padj > 3 & log2FoldChange > 0.58),
+                    aes(label = GeneSymbol),
+                    size = 3,
+                    colour = "#B2182B",
+                    segment.color = "#B2182B",
+                    max.overlaps = 7,
+                    box.padding = 0.5,
+                    force = 20,
+                    min.segment.length = 0,
+                    nudge_x = 0.1,
+                    direction = "both") +
+    geom_text_repel(data = subset(data, log10padj > 3 & log2FoldChange < -0.58),
+                    aes(label = GeneSymbol),
+                    size = 3,
+                    colour = "#2166AC",
+                    segment.color = "#2166AC",
+                    max.overlaps = 7,
+                    box.padding = 0.5,
+                    force = 10,
+                    min.segment.length = 0,
+                    nudge_x = -0.2,
+                    direction = "both") +
+    geom_point(data = . %>% filter(log10padj > 1.301 & log2FoldChange > 0.58),
+               size = 2, color = "#B2182B") +
+    geom_point(data = . %>% filter(log10padj > 1.301 & log2FoldChange < -0.58),
+               size = 2, color = "#2166AC") +
+    geom_vline(xintercept = 0.58, color = "#B2182B", linetype = "dotdash", linewidth = 0.5) +
+    geom_vline(xintercept = -0.58, color = "#2166AC", linetype = "dotdash", linewidth = 0.5) +
+    geom_vline(xintercept = 0, color = "black", linetype = "solid", linewidth = 0.5) +
+    geom_hline(yintercept = 1.301, color = "grey", linetype = "dotdash", linewidth = 0.5) +
+    theme(aspect.ratio = 1) +
+    scale_x_continuous(limits = c(-max_abs_x, max_abs_x)) +
+    scale_y_continuous(limits = c(0, max_y)) +
+    theme(
+      legend.position = "none",
+      axis.text.y = element_text(size = 12, colour = "black"),
+      axis.text.x = element_text(size = 12, colour = "black"),
+      axis.title.y = element_text(size = 12, colour = "black"),
+      axis.title.x = element_text(size = 12, colour = "black"),
+      panel.background = element_blank(),
+      panel.grid.major = element_line(color = "#D3D3D380", linewidth = 0.5),
+      panel.grid.minor = element_line(color = "#D3D3D380", linewidth = 0.25),
+      axis.line = element_line(colour = "black"),
+      panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.5),
+      plot.title = element_text(size = 14, hjust = 0)
+    ) +
+    labs(title = title,
+         x = expression(atop("log"[2] * " Fold Change", "Comparison")),
+         y = expression('-log'[10]*' padj'))
+  
+  return(p)
+}
+
+```
+
+```{r DEseq2 setup and spike-in normalization}
+
+#Prepare data for DESeq2 analysis. Select only the introns that are not dm6 (e.g. hg38)
+hg38_counts <- intron_data %>%
+  dplyr::filter(!grepl("dm6", IntronID)) %>%
+  dplyr::select(-Chr, -Start, -End, -Strand, -Length, -GeneName, -ExonID) %>%
+  column_to_rownames(var = "IntronID")
+
+# Extract dm6 spike-in counts for normalization
+dm6_counts <- intron_data %>%
+  dplyr::filter(grepl("dm6", IntronID)) %>%
+  dplyr::select(-Chr, -Start, -End, -Strand, -Length, -GeneName, -ExonID) %>%
+  column_to_rownames(var = "IntronID")
+
+#  Merge hg38 and dm6 counts
+all_counts <- rbind(hg38_counts, dm6_counts)
+
+# Check the number of columns and define conditions accordingly
+num_samples <- ncol(all_counts)
+conditions <- rep(c("DMSO_Chromatin", "DMSO_Nucleoplasm", "DMSO_Cytoplasm",
+                    "GSK591_Chromatin", "GSK591_Nucleoplasm", "GSK591_Cytoplasm"), each = 3)
+if (length(conditions) != num_samples) {
+  stop("The number of conditions does not match the number of samples.")
+}
+
+# Prepare colData for DESeq2
+colData <- data.frame(row.names = colnames(all_counts), condition = factor(conditions))
+
+# Create DESeq2 dataset including spike-in controls
+dds <- DESeqDataSetFromMatrix(countData = all_counts, colData = colData, design = ~ condition)
+
+# Calculate size factors using spike-in controls
+spike_in <- grepl("dm6", rownames(dds))
+dds <- estimateSizeFactors(dds, controlGenes = spike_in)
+
+# Print size factors
+print(sizeFactors(dds))
+
+# Remove spike-in controls from the dataset
+dds <- dds[!spike_in, ]
+
+# Extract feature lengths
+feature_lengths <- intron_data %>%
+  dplyr::select(IntronID, Length) %>%
+  dplyr::distinct()
+lengths <- feature_lengths$Length
+names(lengths) <- feature_lengths$IntronID
+
+# Ensure lengths vector matches rows of dds
+lengths <- lengths[match(rownames(dds), names(lengths))]
+
+# Create offset matrix
+offset_matrix <- matrix(log(rep(lengths, each = ncol(dds))), nrow = nrow(dds), byrow = FALSE)
+rownames(offset_matrix) <- rownames(dds)
+colnames(offset_matrix) <- colnames(dds)
+
+# Add the offset matrix to the DESeq2 dataset
+assay(dds, "offsets") <- offset_matrix
+
+# Perform DESeq2 analysis using the offsets
+dds <- DESeq(dds, test = "LRT", reduced = ~ 1)
+
+# Extract normalized counts, retain IntronID as a column
+norm_counts <- as.data.frame(counts(dds, normalized = TRUE)) %>%
+  tibble::rownames_to_column(var = "IntronID")
+
+# Save normalized counts
+write.csv(norm_counts, paste0(output_dir, 'A549-GSK591andFractionation_dm6-Normalized_hg38-INTRON-counts_DESeq2.csv'), row.names = FALSE)
+
+```
+
+```{r DESeq2 function call for intron analysis with spike in, also intron feature analysis}
+
+# Function for DESeq2 Analysis for Intron Data, use pre-exisitng sizeFactors and Dispersion estimates from above chunk
+
+# Function for DESeq2 Analysis for Intron Data
+run_deseq2_intron_analysis <- function(dds, test_condition, reference_condition, output_prefix) {
+  
+  #add working dir to outputprefix
+  output_prefix <- paste0(output_dir, output_prefix) 
+  
+  # Subset DESeq2 dataset for the specified conditions
+  dds_subset <- dds[, dds$condition %in% c(test_condition, reference_condition)]
+  dds_subset$condition <- droplevels(dds_subset$condition)
+  
+  # Use pre-calculated size factors
+  sizeFactors(dds_subset) <- sizeFactors(dds)[colnames(dds_subset)]
+  
+  # Print the size factors for confirmation
+  print("Size factors being used:")
+  print(sizeFactors(dds_subset))
+  
+  # Perform DESeq2 analysis including dispersion estimation
+  dds_subset <- DESeq(dds_subset)
+  
+  # Extract results for the specific comparison
+  res <- results(dds_subset, contrast = c("condition", test_condition, reference_condition))
+  res <- res[!is.na(res$padj), ]
+  
+  # Save the results to a CSV file, converting rowname to column
+  write.csv(
+    (as.data.frame(res) %>%
+    tibble::rownames_to_column(var = "IntronID")
+    ), paste0(output_prefix, "_DESeq2_results.csv"), row.names = FALSE)
+  
+  # Create a volcano plot
+  volcano_data <- as.data.frame(res) %>%
+    tibble::rownames_to_column("IntronID") %>%
+    mutate(log10padj = -log10(padj), GeneSymbol = IntronID)
+  
+  volcano_plot <- create_volcano_plot(volcano_data, paste0(test_condition, " vs ", reference_condition))
+  print(volcano_plot)
+  
+
+  # Save the volcano plot
+  ggsave(paste0(output_prefix, "_Volcano_Plot.png"), plot = volcano_plot, width = 10, height = 7)
+  ggsave(paste0(output_prefix, "_Volcano_Plot.pdf"), plot = volcano_plot, width = 10, height = 7)
+  
+  return(res)
+}
+
+######################################################################
+
+# Function to create volcano plots
+create_volcano_plot <- function(data, title) {
+  ggplot(data, aes(x = log2FoldChange, y = log10padj)) +
+    geom_point(aes(color = log10padj > 2 & abs(log2FoldChange) > 1), size = 1.5) +
+    scale_color_manual(values = c("grey", "red")) +
+    theme_minimal() +
+    labs(title = title, x = "Log2 Fold Change", y = "-Log10 Adjusted p-value") +
+    theme(legend.position = "none")
+}
+
+#####################################################################
+
+# Function to analyze intron enrichment and plot histogram
+analyze_intron_enrichment <- function(res_data, intron_data, output_name, padj_cutoff = 0.05, log2fc_cutoff = 0.58) {
+  
+  #add wd to outputname
+  output_name <- paste0(output_dir, output_name) 
+  
+  # Convert DESeqResults to a data frame for dplyr compatibility, ensure that IntronID is propagated to res_df
+    res_df <- as.data.frame(res_data) %>%
+  tibble::rownames_to_column(var = "IntronID")
+  
+  # Filter for significant introns
+  sig_introns <- res_df %>%
+    dplyr::filter(padj < padj_cutoff & abs(log2FoldChange) > log2fc_cutoff)
+  
+  # Extract gene names and count the number of significant introns per gene
+  sig_introns <- sig_introns %>%
+    dplyr::mutate(GeneName = sub(":.*", "", IntronID))
+  
+  sig_intron_counts <- sig_introns %>%
+    group_by(GeneName) %>%
+    summarize(SigIntronCount = n())
+  
+  # Extract total intron counts per gene from intron_data
+  total_intron_counts <- intron_data %>%
+    dplyr::filter(!grepl("dm6", IntronID)) %>%
+    group_by(GeneName) %>%
+    summarize(TotalIntronCount = n())
+  
+  # Merge the significant intron counts with total intron counts
+  enrichment_data <- left_join(sig_intron_counts, total_intron_counts, by = "GeneName")
+  
+  # Calculate the percentage of enriched introns per gene
+  enrichment_data <- enrichment_data %>%
+    dplyr::mutate(PercentageEnrichedIntrons = (SigIntronCount / TotalIntronCount) * 100)
+  
+  # Replace NA values with 0 (genes with no significant introns)
+  enrichment_data$PercentageEnrichedIntrons[is.na(enrichment_data$PercentageEnrichedIntrons)] <- 0
+  
+  # Plot histogram of percentage of enriched introns per gene
+  intron_percentage_histogram <- ggplot(enrichment_data, aes(x = PercentageEnrichedIntrons)) +
+    geom_histogram(binwidth = 2, fill = "gray", color = "darkgray") +
+    theme_minimal() +
+    xlim(0, 100) +
+    labs(title = paste(output_name, "Percentage of Enriched Introns per Gene"),
+         x = "Percentage of Enriched Introns",
+         y = "Number of Genes")
+  
+  print(intron_percentage_histogram)
+
+  
+  # Save the histogram
+  ggsave(paste0(output_name, "_Percentage_Enriched_Introns_Histogram.png"), plot = intron_percentage_histogram, width = 10, height = 3)
+  ggsave(paste0(output_name, "_Percentage_Enriched_Introns_Histogram.pdf"), plot = intron_percentage_histogram, width = 10, height = 3)
+  
+  return(enrichment_data)
+}
+
+########################################################################
+
+# Function to extract significantly enriched introns and perform length analysis
+
+analyze_intron_length <- function(res_data, intron_data, output_prefix, fraction_name) {
+  # Convert DESeqResults to a data frame for dplyr compatibility, ensure that IntronID is propagated to res_df
+  res_df <- as.data.frame(res_data)%>%
+  tibble::rownames_to_column(var = "IntronID")
+  
+  # Function to extract significantly enriched introns for a given fraction, remove dm6 introns
+  extract_sig_introns <- function(res_data, intron_data, fraction_name) {
+    res_data %>%
+     dplyr::filter(padj < 0.05 & log2FoldChange > 0.58) %>%
+      dplyr::select(IntronID) %>%
+      inner_join(intron_data, by = "IntronID") %>%
+      filter(!grepl("dm6", IntronID)) %>%
+      mutate(Fraction = fraction_name)
+  }
+
+  # Extract significantly enriched introns for the specified fraction
+  sig_introns <- extract_sig_introns(res_df, intron_data, fraction_name)
+
+# Filter for expressed genes based on exon data, at least 10 counts in 1 sample
+expressed_genes <- exon_data %>%
+  dplyr::filter(rowSums(dplyr::select(., starts_with("DMSO") | starts_with("GSK591")) > 10) > 1) %>%
+  dplyr::pull(GeneName) %>%
+  unique()
+
+# Filter intron data to include only introns from expressed genes
+all_intron_lengths <- intron_data %>%
+  dplyr::filter(GeneName %in% expressed_genes) %>%
+  dplyr::select(IntronID, Length) %>%
+  filter(!grepl("dm6", IntronID)) %>%
+  distinct() %>%
+  mutate(Fraction = "All_featureCounts")
+
+  # Filter out non-finite lengths
+  sig_introns <- sig_introns %>% filter(is.finite(Length))
+  all_intron_lengths <- all_intron_lengths %>% filter(is.finite(Length))
+
+  # Combine data for "All_featureCounts" and the specified fraction
+  plot_data <- bind_rows(
+    sig_introns %>% dplyr::select(Length, Fraction),
+    all_intron_lengths %>% dplyr::select(Length, Fraction)
+  )
+
+  # Set the order of the fractions
+  plot_data$Fraction <- factor(plot_data$Fraction, levels = c("All_featureCounts", fraction_name))
+
+  # Calculate the medians for each fraction
+  medians <- plot_data %>%
+    group_by(Fraction) %>%
+    summarise(median_length = median(Length))
+
+  # Calculate median differences compared to "All_featureCounts"
+  median_differences <- medians %>%
+    dplyr::filter(Fraction != "All_featureCounts") %>%
+    dplyr::mutate(median_diff = median_length - medians$median_length[medians$Fraction == "All_featureCounts"])
+
+  # Perform KS and Wilcoxon tests for the fraction against all featureCounts introns
+  test_results <- plot_data %>%
+    dplyr::filter(Fraction == fraction_name) %>%
+    summarise(
+      ks_p_value = ks.test(log10(Length), log10(all_intron_lengths$Length))$p.value,
+      wilcox_p_value = wilcox.test(log10(Length), log10(all_intron_lengths$Length))$p.value
+    )
+
+# Calculate the count of introns for each fraction
+intron_counts <- plot_data %>%
+  group_by(Fraction) %>%
+  summarise(n_introns = n(), .groups = "drop")
+
+# Extract counts for specific fractions
+n_all <- intron_counts %>% filter(Fraction == "All_featureCounts") %>% pull(n_introns)
+n_test <- intron_counts %>% filter(Fraction == fraction_name) %>% pull(n_introns)
+
+
+  # Create a violin plot of the log10 lengths of significantly enriched introns with Wilcoxon p-values and median differences
+violin_length_plot <- ggplot(plot_data, aes(y = Fraction, x = log10(Length), fill = Fraction)) +
+  geom_violin(trim = FALSE, scale = "width", alpha = 0.7, color = NA) +  # Horizontal violin plot
+  geom_boxplot(width = 0.1, position = position_dodge(0.9), outlier.shape = NA, color = "black", orientation = "y") +  # Box plot overlay
+  stat_summary(fun = median, geom = "point", shape = 18, size = 3, color = "black") +  # Add median points
+  # Add annotations for count and median
+  stat_summary(
+    fun.data = function(x) {
+      data.frame(
+        x = max(log10(plot_data$Length), na.rm = TRUE) * 1.05,
+        label = paste0("count = ", length(x), "\nmedian = ", round(median(log10(x)), 3))
+      )
+    },
+    geom = "text",
+    position = position_dodge(width = 0.9),
+    size = 3,
+    aes(label = ..label..)
+  ) +
+  scale_fill_manual(values = c("All_ExpressedGeneIntrons" = "gray", fraction_name = "#2D8942")) +  # Custom colors
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 10, color = "black"),
+    axis.title.x = element_text(size = 10, color = "black"),
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 10, color = "black"),
+    legend.position = "none",
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 10)
+  ) +
+  labs(
+    title = paste("Length of All Expressed Gene Introns vs ", fraction_name),
+    x = expression(log[10]*"(Intron Length)")
+  )
+
+
+# Add Wilcoxon p-value and median differences as annotations
+violin_length_plot <- violin_length_plot +
+  annotate(
+    "text",
+    y = 2.2,  # Adjust to position near the test condition, offset
+    x = max(log10(plot_data$Length), na.rm = TRUE) * 0.95,
+    label = paste0("Wilcoxon p-value: ", format(test_results$wilcox_p_value, digits = 2)),
+    size = 3, color = "black", hjust = 0.5
+  ) +
+  annotate(
+    "text",
+    y = 1.8,  # Adjust to position near the test condition, offset
+    x = max(log10(plot_data$Length), na.rm = TRUE) * 0.95,
+    label = paste0("Median length diff: ", format(median_differences$median_diff, digits = 2)),
+    size = 3, color = "black", hjust = 0.5
+  ) +
+  # add n introns for each
+ annotate(
+    "text",
+    y = 2.1,  # Adjust to position near the test condition
+    x = 0.5,
+    label = paste0("n introns = ", n_test),
+    size = 3, color = "black", hjust = 0.5
+  ) +
+  annotate(
+    "text",
+    y = 1.1,  # Adjust to position near All_featureCounts
+    x = 0.5,
+    label = paste0("n introns = ", n_all),
+    size = 3, color = "black", hjust = 0.5
+  ) 
+
+
+  print(violin_length_plot)
+
+  #add wd to output_prefix
+  output_prefix <- paste0(output_dir, output_prefix) 
+  
+  # Save the violin plot of intron lengths
+  ggsave(paste0(output_prefix, "_Log10_Length_Distribution_", fraction_name, ".png"), plot = violin_length_plot, width = 10, height = 6)
+  ggsave(paste0(output_prefix, "_Log10_Length_Distribution_", fraction_name, ".pdf"), plot = violin_length_plot, width = 10, height = 6)
+
+
+  
+}
+
+  
+# DESeq2 analysis function for intron data
+call_DESeq2_analysis <- function(test_condition, reference_condition, prefix) {
+  # Call the DESeq2 analysis function
+  res <- run_deseq2_intron_analysis(dds, test_condition, reference_condition, prefix)
+  
+  # Analyze intron enrichment
+  enrichment_data <- analyze_intron_enrichment(res, intron_data, prefix)
+  
+  # Analyze intron length
+  analyze_intron_length(res, intron_data, prefix, test_condition)
+  
+  return(list(results = res, enrichment_data = enrichment_data))
+}
+
+
+```
+
+```{r DESeq2_Cyto_vs_Cyto GSK591 vs DMSO Introns}
+test_condition <- "GSK591_Cytoplasm"
+reference_condition <- "DMSO_Cytoplasm"
+prefix <- paste0(test_condition, "_vs_", reference_condition)
+
+call_DESeq2_analysis(test_condition, reference_condition, prefix)
+
+```
+
+```{r DESeq2_Nuc_vs_Nuc GSK591 vs DMSO Introns}
+test_condition <- "GSK591_Nucleoplasm"
+reference_condition <- "DMSO_Nucleoplasm"
+prefix <- paste0(test_condition, "_vs_", reference_condition)
+
+call_DESeq2_analysis(test_condition, reference_condition, prefix)
+
+```
+
+```{r DESeq2_Chromatin_vs_Chromatin GSK591 vs DMSO Introns}
+test_condition <- "GSK591_Chromatin"
+reference_condition <- "DMSO_Chromatin"
+prefix <- paste0(test_condition, "_vs_", reference_condition)
+
+
+call_DESeq2_analysis(test_condition, reference_condition, prefix)
+
+
+```
+
+```{r DESeq2_DMSO_Chromatin_vs_Cytoplasm  Introns}
+test_condition <- "DMSO_Chromatin"
+reference_condition <- "DMSO_Cytoplasm"
+prefix <- paste0(test_condition, "_vs_", reference_condition)
+
+call_DESeq2_analysis(test_condition, reference_condition, prefix)
+
+
+```
+
+```{r DESeq2_GSK591_Chromatin_vs_Cytoplasm  Introns}
+test_condition <- "GSK591_Chromatin"
+reference_condition <- "GSK591_Cytoplasm"
+prefix <- paste0(test_condition, "_vs_", reference_condition)
+
+
+call_DESeq2_analysis(test_condition, reference_condition, prefix)
+
+
+```
+
+
+```{r intron_enrichment_analysis, eval=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Function to analyze intron enrichment and plot histogram
+analyze_intron_enrichment <- function(res_data, intron_data, output_name, padj_cutoff = 0.05, log2fc_cutoff = 0.58) {
+  
+  # Filter for significant introns
+  sig_introns <- res_data %>%
+    filter(padj < padj_cutoff & abs(log2FoldChange) > log2fc_cutoff)
+  
+  # Extract gene names and count the number of significant introns per gene
+  sig_introns <- sig_introns %>%
+    mutate(GeneName = sub(":.*", "", IntronID))
+  
+  sig_intron_counts <- sig_introns %>%
+    group_by(GeneName) %>%
+    summarize(SigIntronCount = n())
+  
+  # Extract total intron counts per gene from intron_data
+  total_intron_counts <- intron_data %>%
+    filter(!grepl("dm6", IntronID)) %>%
+    group_by(GeneName) %>%
+    summarize(TotalIntronCount = n())
+  
+  # Merge the significant intron counts with total intron counts
+  enrichment_data <- left_join(sig_intron_counts, total_intron_counts, by = "GeneName")
+  
+  # Calculate the percentage of enriched introns per gene
+  enrichment_data <- enrichment_data %>%
+    mutate(PercentageEnrichedIntrons = (SigIntronCount / TotalIntronCount) * 100)
+  
+  # Replace NA values with 0 (genes with no significant introns)
+  enrichment_data$PercentageEnrichedIntrons[is.na(enrichment_data$PercentageEnrichedIntrons)] <- 0
+  
+  # Plot histogram of percentage of enriched introns per gene
+  intron_percentage_histogram <- ggplot(enrichment_data, aes(x = PercentageEnrichedIntrons)) +
+    geom_histogram(binwidth = 5, fill = "gray", color = "darkgray") +
+    theme_minimal() +
+    xlim(0, 100) +
+    labs(title = paste(output_name, "Percentage of Enriched Introns per Gene"),
+         x = "Percentage of Enriched Introns",
+         y = "Number of Genes")
+  
+  print(intron_percentage_histogram)
+  
+  # Save the histogram
+  ggsave(paste0(output_name, "_Percentage_Enriched_Introns_Histogram.png"), plot = intron_percentage_histogram, width = 10, height = 3)
+  ggsave(paste0(output_name, "_Percentage_Enriched_Introns_Histogram.pdf"), plot = intron_percentage_histogram, width = 10, height = 3)
+  
+  return(enrichment_data)
+}
+
+# Example usage
+#enrichment_data_chromatin <- analyze_intron_enrichment(res_Chromatin, intron_data, "Chromatin")
+#enrichment_data_chromatin <- analyze_intron_enrichment(res_Nucleoplasm, intron_data, "Nucleoplasm")
+#enrichment_data_chromatin <- analyze_intron_enrichment(res_Cytoplasm, intron_data, "Cytoplasm")
+```
+
+```{r intron length analysis and comparison, eval = FALSE}
+
+#function used above
+# Function to extract significantly enriched introns for a given fraction, remove dm6 introns
+extract_sig_introns <- function(res_data, intron_data, fraction_name) {
+  res_data %>%
+    filter(padj < 0.05 & log2FoldChange > 0.58) %>%
+    dplyr::select(IntronID) %>%
+    inner_join(intron_data, by = "IntronID") %>%
+    filter(!grepl("dm6", IntronID)) %>%
+    mutate(Fraction = fraction_name)
+}
+
+# Extract significantly enriched introns for the Chromatin fraction
+sig_introns_chromatin <- extract_sig_introns(res_chromatin, intron_data, "Chromatin")
+
+# Create an "all" table from all featureCount genes, remove dm6 introns
+all_intron_lengths <- intron_data %>%
+  dplyr::select(IntronID, Length) %>%
+  filter(!grepl("dm6", IntronID)) %>%
+  distinct() %>%
+  mutate(Fraction = "All_featureCounts")
+
+# Combine data for "All_featureCounts" and "Chromatin" fractions
+plot_data <- bind_rows(
+  sig_introns_chromatin %>% dplyr::select(Length, Fraction),
+  all_intron_lengths %>% dplyr::select(Length, Fraction)
+)
+
+# Set the order of the fractions
+plot_data$Fraction <- factor(plot_data$Fraction, levels = c("All_featureCounts", "Chromatin"))
+
+# Calculate the medians for each fraction
+medians <- plot_data %>%
+  group_by(Fraction) %>%
+  summarise(median_length = median(Length))
+
+# Calculate median differences compared to "All_featureCounts"
+median_differences <- medians %>%
+  filter(Fraction != "All_featureCounts") %>%
+  mutate(median_diff = median_length - medians$median_length[medians$Fraction == "All_featureCounts"])
+
+# Perform KS and Wilcoxon tests for the Chromatin fraction against all featureCounts introns
+test_results <- plot_data %>%
+  filter(Fraction == "Chromatin") %>%
+  summarise(
+    ks_p_value = ks.test(log10(Length), log10(all_intron_lengths$Length))$p.value,
+    wilcox_p_value = wilcox.test(log10(Length), log10(all_intron_lengths$Length))$p.value
+  )
+
+# Create a violin plot of the log10 lengths of significantly enriched introns with Wilcoxon p-values and median differences
+violin_length_plot <- ggplot(plot_data, aes(x = Fraction, y = log10(Length), fill = Fraction)) +
+  geom_violin(trim = FALSE, scale = "width") +
+  geom_boxplot(width = 0.1, position = position_dodge(0.9), outlier.shape = NA) +
+  theme_minimal() +
+  labs(title = "Log10 Length Distribution of Significantly Enriched Introns Compared to All FeatureCounts Introns",
+       x = "Fraction",
+       y = "Log10(Intron Length)") +
+  scale_fill_manual(values = c("All_featureCounts" = "gray", "Chromatin" = "#2D8942")) +
+  geom_text(data = test_results, aes(x = "Chromatin", y = max(log10(plot_data$Length)), 
+                                     label = paste0("Wilcoxon p-value: ", format(wilcox_p_value, digits = 2))),
+            inherit.aes = FALSE, size = 3, color = "black") +
+  geom_text(data = median_differences, aes(x = "Chromatin", y = 0.5, 
+                                           label = paste0("Median diff: ", format(median_diff, digits = 2))),
+            inherit.aes = FALSE, size = 3, color = "black")
+
+print(violin_length_plot)
+
+# Save the violin plot of intron lengths
+ggsave("Log10_Length_Distribution_of_Significantly_Enriched_Introns_Compared_to_All_FeatureCounts_Introns_Chromatin.png", plot = violin_length_plot, width = 10, height = 7)
+ggsave("Log10_Length_Distribution_of_Significantly_Enriched_Introns_Compared_to_All_FeatureCounts_Introns_Chromatin.pdf", plot = violin_length_plot, width = 10, height = 7)
+
+```
+
+```{r intron-exon per gene}
+
+# Ensure intron and exon data are properly loaded
+#intron_data <- process_data(paste0(working_dir,'featureCounts_IntronsExons/Intron_Count_hg38_dm6_A549_frac_PRMTi_s2.txt'), "intron")
+#exon_data <- process_data(paste0(working_dir,'featureCounts_IntronsExons/Exon_Count_hg38_dm6_A549_frac_PRMTi_s2.txt'), "exon")
+
+# Aggregate intron and exon counts by gene and condition
+aggregate_counts <- function(data, type) {
+  long_data <- data %>%
+    pivot_longer(cols = starts_with("DMSO") | starts_with("GSK591"), names_to = "Condition_Replicate", values_to = "Count") %>%
+    separate(Condition_Replicate, into = c("Condition", "Replicate"), sep = "_rep") %>%
+    group_by(GeneName, Condition) %>%
+    summarize(avg_count = mean(Count), .groups = 'drop')
+  
+  long_data <- long_data %>% mutate(Type = type)
+  return(long_data)
+}
+
+intron_counts <- aggregate_counts(intron_data, "Intron")
+exon_counts <- aggregate_counts(exon_data, "Exon")
+
+# Merge intron and exon counts
+merged_counts <- inner_join(intron_counts, exon_counts, by = c("GeneName", "Condition"), suffix = c("_intron", "_exon"))
+
+# Calculate intron/exon ratios
+merged_counts <- merged_counts %>%
+  mutate(IntronExon_Ratio = avg_count_intron / (avg_count_exon + 1))
+
+# Step 1: Aggregate data to ensure unique GeneName and Condition combinations
+aggregated_counts <- merged_counts %>%
+  group_by(GeneName, Condition) %>%
+  summarise(
+    IntronExon_Ratio = mean(IntronExon_Ratio, na.rm = TRUE), # Calculate mean ratio per GeneName and Condition
+    .groups = "drop"
+  )
+
+# Step 2: Pivot the aggregated data to create columns for each Condition
+IntronExonRatio_data <- aggregated_counts %>%
+  pivot_wider(names_from = Condition, values_from = IntronExon_Ratio)
+
+```
+
+```{r plot comparisons}
+
+# Step 1: Create a function for generating comparison plots
+generate_comparison_plot <- function(data, x_column, y_column, 
+                                     x_label, y_label, 
+                                     title, output_filename,
+                                     x_limits = NULL, y_limits = NULL) {
+  comparison_plot <- ggplot(data, aes_string(x = x_column, y = y_column)) +
+    geom_pointdensity(size = 0.5) +
+    scale_color_viridis() +
+    geom_abline(slope = 1, intercept = 0, linetype = "dotted", color = "black") +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(size = 12, colour = "black"),
+      axis.text.x = element_text(size = 12, colour = "black"),
+      axis.title.y = element_text(size = 12, colour = "black"),
+      axis.title.x = element_text(size = 12, colour = "black"),
+      axis.ticks = element_line(colour = "black"),
+      axis.ticks.length = unit(0.1, "cm"),
+      panel.background = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line = element_line(colour = "black"),
+      panel.border = element_rect(colour = "black", fill = NA, size = 1),
+      legend.position = "right",
+      aspect.ratio = 1
+    ) +
+    labs(
+      title = title,
+      x = x_label,
+      y = y_label,
+      color = "Transcript Density"
+    )
+    # Apply x and y limits if provided
+  if (!is.null(x_limits)) {
+    comparison_plot <- comparison_plot + scale_x_continuous(limits = x_limits)
+  }
+  if (!is.null(y_limits)) {
+    comparison_plot <- comparison_plot + scale_y_continuous(limits = y_limits)
+  }
+  # Display the plot
+  print(comparison_plot)
+
+  # Save the plot
+  ggsave(filename = paste0(output_dir, output_filename, ".png"), 
+         plot = comparison_plot, width = 8, height = 8)
+  ggsave(filename = paste0(output_dir, output_filename, ".pdf"), 
+         plot = comparison_plot, width = 8, height = 8)
+}
+
+# Step 2: Add natural log-transformed columns for all conditions
+IntronExonRatio_data <- IntronExonRatio_data %>%
+  mutate(
+    ln_DMSO_Chromatin = log(DMSO_Chromatin + 1),
+    ln_DMSO_Cytoplasm = log(DMSO_Cytoplasm + 1),
+    ln_DMSO_Nucleoplasm = log(DMSO_Nucleoplasm + 1),
+    ln_GSK591_Chromatin = log(GSK591_Chromatin + 1),
+    ln_GSK591_Cytoplasm = log(GSK591_Cytoplasm + 1),
+    ln_GSK591_Nucleoplasm = log(GSK591_Nucleoplasm + 1)
+  )
+# Step 3: Call the function for specific comparisons
+# Comparison 1: DMSO Chromatin vs GSK591 Chromatin
+generate_comparison_plot(
+  data = IntronExonRatio_data,
+  x_column = "ln_DMSO_Chromatin",
+  y_column = "ln_GSK591_Chromatin",
+  x_label = "ln(DMSO Chromatin Intron/Exon Ratio)",
+  y_label = "ln(GSK591 Chromatin Intron/Exon Ratio)",
+  title = "IntronExonRatio: DMSO Chromatin vs GSK591 Chromatin (per transcript)",
+  output_filename = "IntronExonRatio_DMSO-Chromatin_vs_GSK591_Chromatin",
+  x_limits = c(0,4),
+  y_limits = c(0,4)
+)
+
+# Comparison 2: DMSO Chromatin vs DMSO Cytoplasm
+generate_comparison_plot(
+  data = IntronExonRatio_data,
+  x_column = "ln_DMSO_Chromatin",
+  y_column = "ln_DMSO_Cytoplasm",
+  x_label = "ln(DMSO Chromatin Intron/Exon Ratio)",
+  y_label = "ln(DMSO Cytoplasm Intron/Exon Ratio)",
+  title = "IntronExonRatio: DMSO Chromatin vs DMSO Cytoplasm (per transcript)",
+  output_filename = "IntronExonRatio_DMSO_Chromatin_vs_DMSO_Cytoplasm",
+    x_limits = c(0,4),
+  y_limits = c(0,4)
+)
+
+# Comparison 2: DMSO Chromatin vs DMSO Cytoplasm
+generate_comparison_plot(
+  data = IntronExonRatio_data,
+  x_column = "ln_DMSO_Chromatin",
+  y_column = "ln_DMSO_Nucleoplasm",
+  x_label = "ln(DMSO Chromatin Intron/Exon Ratio)",
+  y_label = "ln(DMSO Nucleoplasm Intron/Exon Ratio)",
+  title = "IntronExonRatio: DMSO Chromatin vs DMSO Nucleoplasm (per transcript)",
+  output_filename = "IntronExonRatio_DMSO_Chromatin_vs_DMSO_Nucleoplasm",
+    x_limits = c(0,4),
+  y_limits = c(0,4)
+)
+
+# Comparison 3: GSK591 Chromatin vs GSK591 Cytoplasm
+generate_comparison_plot(
+  data = IntronExonRatio_data,
+  x_column = "ln_DMSO_Cytoplasm",
+  y_column = "ln_GSK591_Cytoplasm",
+  x_label = "ln(GSK591 Cytoplasm Intron/Exon Ratio)",
+  y_label = "ln(GSK591 Cytoplasm Intron/Exon Ratio)",
+  title = "IntronExonRatio: DMSO Cytoplasm vs GSK591 Cytoplasm  (per transcript)",
+  output_filename = "IntronExonRatio_DMSO_Cytoplasm_vs_GSK591_Cytoplasm",
+    x_limits = c(0,4),
+  y_limits = c(0,4)
+)
+
+
+```
+
+```{r IntronExon Ratio Comparison Plots}
+
+# Step 1: Read GRIPPs file and prepare for overlay
+GRIPPs <- read.csv("C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 7/GRIPPs/GRIPPs.csv")
+
+# Filter IntronExonRatio_data for genes in GRIPPs
+IntronExonRatio_GRIPPs <- IntronExonRatio_data %>%
+  filter(GeneName %in% gripps$Symbol) %>%
+  mutate(is_GRIPP = TRUE)
+
+# Combine GRIPPs data with the full dataset
+IntronExonRatio_full <- IntronExonRatio_data %>%
+  mutate(is_GRIPP = ifelse(GeneName %in% gripps$Symbol, TRUE, FALSE))
+
+# Step 2: Updated function for overlaying GRIPPs
+generate_comparison_plot_with_overlay <- function(data, overlay_data, 
+                                                  x_column, y_column, 
+                                                  x_label, y_label, 
+                                                  title, output_filename,
+                                                   x_limits = NULL, y_limits = NULL) {
+  comparison_plot <- ggplot(data, aes_string(x = x_column, y = y_column)) +
+    # Base data in gray
+    geom_point(color = "#D4D4D4", alpha = 0.5, size = 0.5) +
+    # Overlay GRIPPs in transparent purple
+    geom_point(data = overlay_data, aes_string(x = x_column, y = y_column), 
+               color = "#666666", alpha = 0.5, size = 1) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dotted", color = "black") +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(size = 12, colour = "black"),
+      axis.text.x = element_text(size = 12, colour = "black"),
+      axis.title.y = element_text(size = 12, colour = "black"),
+      axis.title.x = element_text(size = 12, colour = "black"),
+      axis.ticks = element_line(colour = "black"),
+      axis.ticks.length = unit(0.1, "cm"),
+      panel.background = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line = element_line(colour = "black"),
+      panel.border = element_rect(colour = "black", fill = NA, size = 1),
+      legend.position = "none",
+      aspect.ratio = 1
+    ) +
+    labs(
+      title = title,
+      x = x_label,
+      y = y_label
+    )
+    # Apply x and y limits if provided
+  if (!is.null(x_limits)) {
+    comparison_plot <- comparison_plot + scale_x_continuous(limits = x_limits)
+  }
+  if (!is.null(y_limits)) {
+    comparison_plot <- comparison_plot + scale_y_continuous(limits = y_limits)
+  }
+  # Display the plot
+  print(comparison_plot)
+  # Display the plot
+  print(comparison_plot)
+  
+  # Save the plot
+  ggsave(filename = paste0(output_dir, output_filename, ".png"), 
+         plot = comparison_plot, width = 8, height = 8)
+  ggsave(filename = paste0(output_dir, output_filename, ".pdf"), 
+         plot = comparison_plot, width = 8, height = 8)
+}
+
+# Step 3: Call the function for the desired comparison
+generate_comparison_plot_with_overlay(
+  data = IntronExonRatio_data,
+  overlay_data = IntronExonRatio_GRIPPs,
+  x_column = "ln_DMSO_Chromatin",
+  y_column = "ln_DMSO_Cytoplasm",
+  x_label = "ln(DMSO Chromatin Intron/Exon Ratio)",
+  y_label = "ln(DMSO Cytoplasm Intron/Exon Ratio)",
+  title = "IntronExonRatio: DMSO Chromatin vs DMSO Cytoplasm (with GRIPPs overlay)",
+  output_filename = "IntronExonRatio_DMSO_Chromatin_vs_DMSO_Cytoplasm_with_GRIPPs",
+  x_limits = c(0,4),
+  y_limits = c(0,4)
+)
+
+
+```
+
+```{r PRMT5 dependent GRIPPs}
+# Step 1: Load DESeq2 results and filter for GSK591-dependent GRIPPs
+PRMT5GRIPPs_results <- read.csv("C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 6/Output/GSK591_chromatin_vs_DMSO_chromatin_SpikeInNormalized_DESEQ2.csv")
+
+# Filter for significant GSK591-dependent GRIPPs
+prmt5_dependent_gripps <- PRMT5GRIPPs_results %>%
+  dplyr::filter(padj < 0.01 & log2FoldChange > 1) %>%
+  dplyr::select(GeneSymbol) %>%
+  dplyr::rename(Symbol = GeneSymbol) %>% # Rename GeneSymbol to Symbol
+  distinct()
+
+# GRIPPs
+IntronExonRatio_GRIPPs <- IntronExonRatio_data %>%
+  filter(GeneName %in% gripps$Symbol) %>%
+  mutate(is_GRIPP = TRUE)
+
+# PRMT5-dependent GRIPPs
+IntronExonRatio_PRMT5_GRIPPs <- IntronExonRatio_data %>%
+  filter(GeneName %in% prmt5_dependent_gripps$Symbol) %>%
+  mutate(is_PRMT5_GRIPP = TRUE)
+
+# Step 3: Combine GRIPPs and PRMT5-dependent GRIPPs with the full dataset
+IntronExonRatio_full <- IntronExonRatio_data %>%
+  mutate(
+    is_GRIPP = ifelse(GeneName %in% gripps$Symbol, TRUE, FALSE),
+    is_PRMT5_GRIPP = ifelse(GeneName %in% prmt5_dependent_gripps$Symbol, TRUE, FALSE)
+  )
+
+# Step 4: Define a new function for multiple overlays
+generate_comparison_plot_with_multiple_overlays <- function(data, overlay_data1, overlay_data2, 
+                                                            x_column, y_column, x_label, y_label, 
+                                                            title, output_filename, 
+                                                            x_limits = NULL, y_limits = NULL) {
+  comparison_plot <- ggplot(data, aes_string(x = x_column, y = y_column)) +
+    # Base data in gray
+    geom_point(color = "#DADADA", alpha = 0.5, size = 1) +
+    # Overlay GRIPPs in purple
+    geom_point(data = overlay_data1, aes_string(x = x_column, y = y_column), 
+               color = "#666666", alpha = 0.7, size = 1) +
+    # Overlay PRMT5-dependent GRIPPs in blue
+    geom_point(data = overlay_data2, aes_string(x = x_column, y = y_column), 
+               color = "#0D8943", alpha = 0.7, size = 1) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dotted", color = "black") +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(size = 12, colour = "black"),
+      axis.text.x = element_text(size = 12, colour = "black"),
+      axis.title.y = element_text(size = 12, colour = "black"),
+      axis.title.x = element_text(size = 12, colour = "black"),
+      axis.ticks = element_line(colour = "black"),
+      axis.ticks.length = unit(0.1, "cm"),
+      panel.background = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line = element_line(colour = "black"),
+      panel.border = element_rect(colour = "black", fill = NA, size = 1),
+      legend.position = "none",
+      aspect.ratio = 1
+    ) +
+    labs(
+      title = title,
+      x = x_label,
+      y = y_label
+    )
+   # Apply x and y limits if provided
+  if (!is.null(x_limits)) {
+    comparison_plot <- comparison_plot + scale_x_continuous(limits = x_limits)
+  }
+  if (!is.null(y_limits)) {
+    comparison_plot <- comparison_plot + scale_y_continuous(limits = y_limits)
+  }
+  # Display the plot
+  print(comparison_plot)
+  
+  # Save the plot
+  ggsave(filename = paste0(output_dir, output_filename, ".png"), 
+         plot = comparison_plot, width = 8, height = 8)
+  ggsave(filename = paste0(output_dir, output_filename, ".pdf"), 
+         plot = comparison_plot, width = 8, height = 8)
+}
+
+# Step 5: Call the function for the desired comparison
+generate_comparison_plot_with_multiple_overlays(
+  data = IntronExonRatio_data,
+  overlay_data1 = IntronExonRatio_GRIPPs,
+  overlay_data2 = IntronExonRatio_PRMT5_GRIPPs,
+  x_column = "ln_DMSO_Chromatin",
+  y_column = "ln_DMSO_Cytoplasm",
+  x_label = "ln(DMSO Chromatin Intron/Exon Ratio)",
+  y_label = "ln(DMSO Cytoplasm Intron/Exon Ratio)",
+  title = "IntronExonRatio: DMSO Chromatin vs DMSO Cytoplasm (with GRIPPs and PRMT5-dependent GRIPPs overlays)",
+  output_filename = "IntronExonRatio_DMSO_Chromatin_vs_DMSO_Cytoplasm_with_GRIPPs_and_PRMT5",
+  x_limits = c(0,3),
+  y_limits = c(0,3)
+)
+
+```

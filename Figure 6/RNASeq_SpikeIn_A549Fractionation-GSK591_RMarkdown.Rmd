@@ -1,7 +1,7 @@
 ---
 pdf_document: default
-title: "A549 +/- GSK591 2days (PRMT5i) Fractionation RNA-Seq with Dm6 spike-in"
-author: "Maxim Maron, David Shechter"
+title: "A549 +/- GSK591 2days (PRMT5i) Fractionation RNA-Seq with Dm6 spike-in, BH and Q-Value Outputs"
+author: "David Shechter, Maxim Maron, Joe DeAngelo"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
   html_document: null
@@ -14,13 +14,24 @@ Data is loaded from pre-computed Salmon quant outputs
 
 *This analysis requires STAR mapping to a joint hg38-dm6 genome and a pre-built gtf with "dm6" in the Chromsome column for any control spike-in gene. These files are available at [www.github.com/shechterlab](www.github.com/shechterlab)*
 
+*Analysis outputs BH adjusted pvalues and also qvalues, as described here: https://www.bioconductor.org/packages/release/bioc/html/qvalue.html and here: https://en.wikipedia.org/wiki/Q-value_(statistics)*
+*Qvalues may be less conservative estimating the true significance of a test*
+
 ```{r "setup", include=FALSE}
 
 # Set the WD here
 working_dir <- 'C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 6/'
 knitr::opts_knit$set(root.dir = normalizePath(working_dir))
+knitr::opts_chunk$set(error = TRUE)  # Allow knitting to continue on errors, this is needed for qval issue when too few p<0.1
 setwd(working_dir)
 getwd()
+
+# Create output directory
+output_dir <- paste0(working_dir, "Output/")
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir)
+  }
+
 
 #load librarys
 library(tidyverse)
@@ -33,6 +44,7 @@ library(pheatmap)
 library(knitr)
 library(kableExtra)
 library(ggplot2)
+library(qvalue)
 
 # General function to load data
 load_data <- function(file_path, delimiter = ",", header = TRUE) {
@@ -54,9 +66,135 @@ gtf_gene_annotation_table = 'dm6.hg38.gtf_gene_annotation_table.txt'
 #initialize this list for filling during the function
 summary_stats_list <- list()
 
-#create output dir
-if (!file.exists(paste0(working_dir, "DESeq2_output/"))) {
-  dir.create(working_dir, "DESeq2_output") }
+```
+
+```{r Volcano Plot Function, include=FALSE}
+
+# Function to create volcano plots with padj
+create_volcano_plot_padj <- function(data, title) {
+  data$log10padj <- -log10(data$padj)
+  
+  max_abs_x <- max(abs(data$log2FoldChange)) * 1.4 # give 40% buffer on axes
+  max_y <- max(data$log10padj) * 1.4 # 40% buffer
+  
+  p <- ggplot(data, aes(x = log2FoldChange, y = log10padj)) +
+    geom_point(color = "#BEBEBE", size = 1.5, alpha = 1, shape = 16) +
+    geom_text_repel(data = subset(data, log10padj > 3 & log2FoldChange > 0.58),
+                    aes(label = GeneSymbol),
+                    size = 3,
+                    colour = "#B2182B",
+                    segment.color = "#B2182B",
+                    max.overlaps = 7,
+                    box.padding = 0.5,
+                    force = 20,
+                    min.segment.length = 0,
+                    nudge_x = 0.1,
+                    direction = "both") +
+    geom_text_repel(data = subset(data, log10padj > 3 & log2FoldChange < -0.58),
+                    aes(label = GeneSymbol),
+                    size = 3,
+                    colour = "#2166AC",
+                    segment.color = "#2166AC",
+                    max.overlaps = 7,
+                    box.padding = 0.5,
+                    force = 10,
+                    min.segment.length = 0,
+                    nudge_x = -0.2,
+                    direction = "both") +
+    geom_point(data = . %>% filter(log10padj > 1.301 & log2FoldChange > 0.58),
+               size = 2, color = "#B2182B") +
+    geom_point(data = . %>% filter(log10padj > 1.301 & log2FoldChange < -0.58),
+               size = 2, color = "#2166AC") +
+    geom_vline(xintercept = 0.58, color = "#B2182B", linetype = "dotdash", linewidth = 0.5) +
+    geom_vline(xintercept = -0.58, color = "#2166AC", linetype = "dotdash", linewidth = 0.5) +
+    geom_vline(xintercept = 0, color = "black", linetype = "solid", linewidth = 0.5) +
+    geom_hline(yintercept = 1.301, color = "grey", linetype = "dotdash", linewidth = 0.5) +
+    theme(aspect.ratio = 1) +
+    scale_x_continuous(limits = c(-max_abs_x, max_abs_x)) +
+    scale_y_continuous(limits = c(0, max_y)) +
+    theme(
+      legend.position = "none",
+      axis.text.y = element_text(size = 12, colour = "black"),
+      axis.text.x = element_text(size = 12, colour = "black"),
+      axis.title.y = element_text(size = 12, colour = "black"),
+      axis.title.x = element_text(size = 12, colour = "black"),
+      panel.background = element_blank(),
+      panel.grid.major = element_line(color = "#D3D3D380", linewidth = 0.5),
+      panel.grid.minor = element_line(color = "#D3D3D380", linewidth = 0.25),
+      axis.line = element_line(colour = "black"),
+      panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.5),
+      plot.title = element_text(size = 14, hjust = 0)
+    ) +
+    labs(title = title,
+         x = expression(atop("log"[2] * " Fold Change", "Comparison")),
+         y = expression('-log'[10]*' padj'))
+  
+  return(p)
+}
+
+
+
+# Function to create volcano plots with qvalue
+create_volcano_plot_qval <- function(data, title) {
+  data$log10qval <- -log10(data$qval)
+  
+  max_abs_x <- max(abs(data$log2FoldChange)) * 1.4 # give 40% buffer on axes
+  max_y <- max(data$log10qval) * 1.4 # 40% buffer
+  
+  p <- ggplot(data, aes(x = log2FoldChange, y = log10qval)) +
+    geom_point(color = "#BEBEBE", size = 1.5, alpha = 1, shape = 16) +
+    geom_text_repel(data = subset(data, log10qval > 3 & log2FoldChange > 0.58),
+                    aes(label = GeneSymbol),
+                    size = 3,
+                    colour = "#B2182B",
+                    segment.color = "#B2182B",
+                    max.overlaps = 7,
+                    box.padding = 0.5,
+                    force = 20,
+                    min.segment.length = 0,
+                    nudge_x = 0.1,
+                    direction = "both") +
+    geom_text_repel(data = subset(data, log10qval > 3 & log2FoldChange < -0.58),
+                    aes(label = GeneSymbol),
+                    size = 3,
+                    colour = "#2166AC",
+                    segment.color = "#2166AC",
+                    max.overlaps = 7,
+                    box.padding = 0.5,
+                    force = 10,
+                    min.segment.length = 0,
+                    nudge_x = -0.2,
+                    direction = "both") +
+    geom_point(data = . %>% filter(log10qval > 1.301 & log2FoldChange > 0.58),
+               size = 2, color = "#B2182B") +
+    geom_point(data = . %>% filter(log10qval > 1.301 & log2FoldChange < -0.58),
+               size = 2, color = "#2166AC") +
+    geom_vline(xintercept = 0.58, color = "#B2182B", linetype = "dotdash", linewidth = 0.5) +
+    geom_vline(xintercept = -0.58, color = "#2166AC", linetype = "dotdash", linewidth = 0.5) +
+    geom_vline(xintercept = 0, color = "black", linetype = "solid", linewidth = 0.5) +
+    geom_hline(yintercept = 1.301, color = "grey", linetype = "dotdash", linewidth = 0.5) +
+    theme(aspect.ratio = 1) +
+    scale_x_continuous(limits = c(-max_abs_x, max_abs_x)) +
+    scale_y_continuous(limits = c(0, max_y)) +
+    theme(
+      legend.position = "none",
+      axis.text.y = element_text(size = 12, colour = "black"),
+      axis.text.x = element_text(size = 12, colour = "black"),
+      axis.title.y = element_text(size = 12, colour = "black"),
+      axis.title.x = element_text(size = 12, colour = "black"),
+      panel.background = element_blank(),
+      panel.grid.major = element_line(color = "#D3D3D380", linewidth = 0.5),
+      panel.grid.minor = element_line(color = "#D3D3D380", linewidth = 0.25),
+      axis.line = element_line(colour = "black"),
+      panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.5),
+      plot.title = element_text(size = 14, hjust = 0)
+    ) +
+    labs(title = title,
+         x = expression(atop("log"[2] * " Fold Change", "Comparison")),
+         y = expression('-log'[10]*' Storey q Value'))
+  
+  return(p)
+}
 
 ```
 
@@ -67,6 +205,10 @@ if (!file.exists(paste0(working_dir, "DESeq2_output/"))) {
 
 #used if not knitting
 setwd(working_dir)
+
+
+# DESeq2 Analysis Function
+#This function performs DESeq2 analysis, generates plots, saves the results, and provides summary statistics.
 
 # General function to run DESeq2 analysis, with features as indicated
 run_deseq2_analysis <- function(txi, col_data, condition_ref, features, output_prefix, use_spikeIn, pvalue_threshold = pval_threshold) {
@@ -107,14 +249,14 @@ run_deseq2_analysis <- function(txi, col_data, condition_ref, features, output_p
       stop("No test genes found without 'dm6' in the Chromosome column.")
     }
     dds <- dds[testGenes,]
-    #dds <- dds_ctrl[rowSums(counts(dds) >= count_cutoff),]
-    keep <- rowSums(counts(dds)) >= count_cutoff
+    #dds <- dds_ctrl[rowSums(counts(dds) >= count_cutoff), in at least 3 coumns]
+   keep <- rowSums(counts(dds) >= count_cutoff) >= 3
     dds <- dds[keep,]
     sizeFactors(dds) <- sf
   } 
   
   else {
-    # Normalize using avgTxLength only, not with ctrlGenes spik In
+    # Normalize using avgTxLength only, not with ctrlGenes spike In
     nm <- assays(dds)[["avgTxLength"]]
     counts <- counts(dds)
     sf <- counts / nm
@@ -135,7 +277,7 @@ run_deseq2_analysis <- function(txi, col_data, condition_ref, features, output_p
     }
     
     dds <- dds[testGenes,]
-    keep <- rowSums(counts(dds)) >= count_cutoff
+    keep <- rowSums(counts(dds) >= count_cutoff) >= 3
     dds <- dds[keep,]
   }
   
@@ -151,12 +293,7 @@ run_deseq2_analysis <- function(txi, col_data, condition_ref, features, output_p
   
   # setup for saving output files
   
-  # Create output directory
-  output_dir <- paste0("Output")
-  if (!dir.exists(output_dir)) {
-    dir.create(output_dir)
-  }
-  
+
   # Setup output files
   output_prefix <- file.path(output_dir, output_prefix)
   
@@ -189,15 +326,15 @@ run_deseq2_analysis <- function(txi, col_data, condition_ref, features, output_p
     res_df <- merge(res_df, features, by.x = "gene_id", by.y = "gene_id")
     res_df <- res_df[order(res_df$padj),]
     
-    #COMMENT OUT BELOW TWO LINES IF USING BH CORRECTION  
-    # Apply Bonferroni correction manually
-    #   res_df$padj <- p.adjust(res_df$pvalue, method = "bonferroni")
-    #   res_df <- res_df[order(res_df$padj),]
+     # Apply q-value calculation
+    qobj <- qvalue(p = res_df$pvalue)
+    res_df$qvalue <- qobj$qvalues
     
+
     if(use_spikeIn) {
-      write.csv(res_df, file = paste0(working_dir, output_prefix, "_vs_", condition_ref, "_SpikeInNormalized_DESEQ2.csv"), row.names = FALSE) }
+      write.csv(res_df, file = paste0(output_prefix, "_vs_", condition_ref, "_SpikeInNormalized_DESEQ2.csv"), row.names = FALSE) }
     else {
-    write.csv(res_df, file = paste0(working_dir, output_prefix, "_vs_", condition_ref, "_noSpikeIn_DESEQ2.csv"), row.names = FALSE) 
+    write.csv(res_df, file = paste0(output_prefix, "_vs_", condition_ref, "_noSpikeIn_DESEQ2.csv"), row.names = FALSE) 
     }
     
     # MA plot
@@ -205,28 +342,27 @@ run_deseq2_analysis <- function(txi, col_data, condition_ref, features, output_p
     
     res_df <- res_df[!is.na(res_df$padj),]
     
-    # Volcano plot
-    volcano <- EnhancedVolcano(res_df,
-                          lab = res_df$GeneSymbol,
-                          x = 'log2FoldChange',
-                          y = 'padj',
-                          title = name,
-                          pCutoff = pvalue_threshold,
-                          FCcutoff = log2FC_threshold,
-                          pointSize = 2.0,
-                          labSize = 5.0,
-                          col = c('#d4d4d4', '#d4d4d4', '#fdbb84', '#e34a33'),
-                          colAlpha = 0.5)
+  
+  # Volcano plot with -log10(qvalue)
+volcano_q <- create_volcano_plot_qval(res_df, paste0(name, " QVal"))
+    print(volcano_q)
+
     
-    print(volcano)
-    
-    if(use_spikeIn) {
-    ggsave(filename = paste0(working_dir, output_prefix, "_vs_", condition_ref, "_SpikeInNormalized_VolcanoPlot.pdf"), plot = volcano)
+   # Function to create volcano plots
+volcano_padj <- create_volcano_plot_padj(res_df, paste0(name, " BH padj"))
+    print(volcano_padj)
+
+
+        if(use_spikeIn) {
+    ggsave(filename = paste0(output_prefix, "_vs_", condition_ref, "_SpikeInNormalized_QValue_VolcanoPlot.pdf"), plot = volcano_q)
+    ggsave(filename = paste0(output_prefix, "_vs_", condition_ref, "_SpikeInNormalized_BHpadj_VolcanoPlot.pdf"), plot = volcano_padj)
+          
     }
     else {
-      ggsave(filename = paste0(working_dir, output_prefix, "_vs_", condition_ref, "_noSpikeIn_VolcanoPlot.pdf"), plot = volcano)
+    ggsave(filename = paste0(output_prefix, "_vs_", condition_ref, "_noSpikeIn_VolcanoPlot.pdf"), plot = volcano)
     }
-    # P-value histogram
+ 
+     # P-value histogram
     pval_hist <- ggplot(res_df, aes(x = pvalue)) + 
       geom_histogram(binwidth = 0.05, fill = "darkgray", color = "black") + 
       theme_minimal() +
@@ -239,6 +375,16 @@ run_deseq2_analysis <- function(txi, col_data, condition_ref, features, output_p
       theme_minimal() +
       labs(title = paste0("BH Adjusted P-value Histogram: ", name), x = " P-value", y = "Frequency")
     print(pval_hist)
+    
+    # Q-value histogram
+    qval_hist <- ggplot(res_df, aes(x = qvalue)) + 
+      geom_histogram(binwidth = 0.05, fill = "darkgray", color = "black") + 
+      theme_minimal() +
+      labs(title = paste0("Storey Q-value Histogram: ", name), x = "Q-value", y = "Frequency")
+    print(qval_hist)
+    
+    # Plot using qvalue package
+    plot(qobj)
     
      # Summary statistics
     summary_stats <- res_df %>% 
@@ -295,7 +441,6 @@ call_DESeq2_analysis <- function(test_sample_name, reference_sample_name, prefix
 }
 
 
-
 ```
 
 
@@ -317,7 +462,34 @@ names(files) <- samples$sample
 
 ***
 
-## HEADING/TITLE FOR THIS ANALYSIS HERE ##
+## DMSO Chromatin vs DMSO Cytoplasm - with SpikeIn Normalization ##
+
+```{r, "DMSO Chromatin vs DMSO cytoplasm with SpikeIn", warning=FALSE}
+
+test_sample_name <- "DMSO_chromatin"
+reference_sample_name <- "DMSO_cytoplasm"
+prefix <- test_sample_name
+use_spikeIn = TRUE
+
+call_DESeq2_analysis(test_sample_name, reference_sample_name, prefix, use_spikeIn)
+
+```
+
+***
+## DMSO chromatin vs DMSO in nucleoplasm - with SpikeIn Normalization ##
+
+```{r, "DMSO chromatin  vs DMSO in nucleoplasm with SpikeIn", warning=FALSE}
+
+test_sample_name <- "DMSO_chromatin"
+reference_sample_name <- "DMSO_nucleoplasm"
+prefix <- test_sample_name
+use_spikeIn = TRUE
+
+call_DESeq2_analysis(test_sample_name, reference_sample_name, prefix, use_spikeIn)
+
+```
+
+***
 
 ## GSK591 vs DMSO in Chromatin with SpikeIn Normalization ##
 
@@ -364,22 +536,10 @@ call_DESeq2_analysis(test_sample_name, reference_sample_name, prefix, use_spikeI
 ```
 
 
-## DMSO Chromatin vs DMSO Cytoplasm - with SpikeIn Normalization ##
-
-```{r, "DMSO Chromatin vs DMSO cytoplasm with SpikeIn", warning=FALSE}
-
-test_sample_name <- "DMSO_chromatin"
-reference_sample_name <- "DMSO_cytoplasm"
-prefix <- test_sample_name
-use_spikeIn = TRUE
-
-call_DESeq2_analysis(test_sample_name, reference_sample_name, prefix, use_spikeIn)
-
-```
 
 ## GSK591 Chromatin vs GSK591 Cytoplasm - with SpikeIn Normalization ##
 
-```{r, "GSK591 Chromatin vs GSK591 cytoplasm with SpikeIn", warning=FALSE}
+```{r, "GSK591 Chromatin vs GSK591 Cytoplasm with SpikeIn", warning=FALSE}
 
 test_sample_name <- "GSK591_chromatin"
 reference_sample_name <- "GSK591_cytoplasm"
@@ -390,19 +550,7 @@ call_DESeq2_analysis(test_sample_name, reference_sample_name, prefix, use_spikeI
 
 ```
 
-## DMSO chromatin vs DMSO in nucleoplasm - with SpikeIn Normalization ##
-
-```{r, "DMSO chromatin  vs DMSO in nucleoplasm with SpikeIn", warning=FALSE}
-
-test_sample_name <- "DMSO_chromatin"
-reference_sample_name <- "DMSO_nucleoplasm"
-prefix <- test_sample_name
-use_spikeIn = TRUE
-
-call_DESeq2_analysis(test_sample_name, reference_sample_name, prefix, use_spikeIn)
-
-```
-
+***
 
 ## GSK591 chromatin vs GSK591 in nucleoplasm - with SpikeIn Normalization ##
 

@@ -1,0 +1,251 @@
+---
+pdf_document: default
+title: "A549 +/- GSK591 2days (PRMT5i) Fractionation RNA-Seq with Dm6 spike-in, TPM and zscore analysis"
+author: "David Shechter, Maxim Maron, Joseph DeAngelo"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: null
+  df_print: paged
+  pdf_document: default
+html_notebook: default
+---
+
+```{r TPM analysis, include = FALSE}
+
+# Set the WD here
+working_dir <- 'C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 6/'
+knitr::opts_knit$set(root.dir = normalizePath(working_dir))
+setwd(working_dir)
+getwd()
+
+# Create output directory
+output_dir <- paste0(working_dir, "Output/")
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir)
+  }
+
+# Load the required libraries
+library(tidyverse)
+library(dplyr)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(biomaRt)
+library(gridExtra)
+library(GOSemSim)
+library(tximport)
+
+
+#this tx2gene and combined gtf file was independently generated, necessary for spike-in analysis
+dm6.hg38.tx2gene_file = 'dm6.hg38.tx2gene.csv'
+gtf_gene_annotation_table = 'dm6.hg38.gtf_gene_annotation_table.txt'
+
+```
+
+```{r functions, include = FALSE}
+
+# Function to transform raw count data to TPM using the loaded data
+counts_to_tpm <- function(count_data, gene_lengths) {
+  if (!is.matrix(count_data)) {
+    stop("Count data must be a matrix")
+  }
+  if (!is.numeric(gene_lengths) || length(gene_lengths) != nrow(count_data)) {
+    stop("Gene lengths must be a numeric vector with the same length as the number of rows in count data")
+  }
+
+  rpk <- count_data / (gene_lengths / 1000)
+  scaling_factors <- colSums(rpk)
+  tpm <- t(t(rpk) / scaling_factors) * 100000
+  return(tpm)
+}
+
+# Function to plot z-scores and return clusters
+plot_zscores <- function(tpm_data, comparisons, number_genes_map, num_clusters) {
+  # Extract column names for the comparison samples
+  comparison_samples <- unique(unlist(sapply(comparisons, function(x) {
+    unlist(sapply(x, function(y) grep(paste0("^", y), colnames(tpm_data), value = TRUE)))
+  })))
+  
+  # Debugging: Check available column names and comparison_samples
+  print("Column names in TPM data:")
+  print(colnames(tpm_data))
+  print("Comparison samples:")
+  print(comparison_samples)
+  
+  # Subset the TPM data for comparison samples
+  tpm_data <- tpm_data[, comparison_samples, drop = FALSE]
+  
+  mean_TPM <- colMeans(tpm_data)
+  sd_TPM <- apply(tpm_data, 2, sd)
+  
+  zscores <- sweep(tpm_data, 2, mean_TPM, "-")
+  zscores <- sweep(zscores, 2, sd_TPM, "/")
+  
+  df_top <- zscores[order(apply(zscores, 1, function(x) max(x) - min(x)), decreasing = TRUE)[1:number_genes_map],]
+  top_matrix <- as.matrix(df_top)
+  
+  mat_scaled <- t(scale(t(top_matrix)))
+  
+  heatmap_plot <- Heatmap(mat_scaled, 
+                          name = "Z-score",
+                          col = rev(brewer.pal(7, "RdBu")),
+                          row_km = num_clusters,
+                          cluster_columns = FALSE,
+                          row_dend_reorder = FALSE,
+                          show_column_dend = FALSE,
+                          show_row_dend = FALSE,
+                          show_row_names = FALSE,
+                          row_names_side = NULL,
+                          row_title = "%s",  row_title_rot = 0,
+                          row_gap = unit(2, "mm"))
+  
+  # Perform clustering and extract clusters
+  hc <- as.hclust(row_dend(heatmap_plot)[[1]])
+  row_names <- as.character(row.names(mat_scaled))
+  row_clusters <- cutree(hc, k = num_clusters)
+  row_clusters <- as.numeric(as.factor(row_clusters))
+  cluster_lists <- split(row_names, row_clusters)
+  
+  return(list(heatmap_plot = heatmap_plot, cluster_lists = cluster_lists))
+}
+
+# Function to run clusterProfiler on clusters and create bubble plots
+
+run_cluster_profiler <- function(cluster_lists, pvalueCutoff = 0.05, qvalueCutoff = 0.05, max_terms = 10) {
+  results_list <- list()
+  plots <- list()
+  
+  # Set up GO data for semantic similarity
+  hsGO <- godata('org.Hs.eg.db', ont = "BP")
+  
+  for (i in seq_along(cluster_lists)) {
+    # Convert the cluster into a vector
+    genes <- unlist(cluster_lists[[i]])  # Ensure it's a vector of gene symbols
+    
+    # Use bitr() to map symbols to Entrez IDs
+    converted_cluster <- bitr(
+      genes,
+      fromType = "ENSEMBL",
+      toType = "ENTREZID",
+      OrgDb = org.Hs.eg.db
+    )
+    
+    # Extract unique Entrez IDs
+    cluster_entrez_ids <- unique(converted_cluster$ENTREZID)
+    
+    # Skip if no Entrez IDs are found
+    if (length(cluster_entrez_ids) == 0) {
+      warning(paste("No valid Entrez IDs for cluster", i))
+      next
+    }
+    
+    # Run GO enrichment analysis
+    result <- enrichGO(
+      gene = cluster_entrez_ids,
+      OrgDb = org.Hs.eg.db,
+      ont = "BP",
+      keyType = "ENTREZID",
+      pAdjustMethod = "BH",
+      pvalueCutoff = pvalueCutoff,
+      qvalueCutoff = qvalueCutoff,
+      readable = TRUE
+    )
+    
+    # Skip if no GO terms are enriched
+    if (is.null(result) || nrow(result) == 0) {
+      warning(paste("No GO terms enriched for cluster", i))
+      next
+    }
+    
+    # Generate a dotplot for the enriched GO terms
+    p <- dotplot(result, showCategory = max_terms) + 
+      ggtitle(paste("Cluster", i, "GO Enrichment"))
+    plots[[i]] <- p
+    
+    # Store the results
+    results_list[[i]] <- result
+  }
+  
+  # Arrange all plots into a grid
+  grid_plots <- marrangeGrob(plots, ncol = 2, nrow = 2)
+  
+  return(list(results_list = results_list, grid_plots = grid_plots))
+}
+
+```
+
+```{r load and setup data, include = FALSE}
+# Load necessary files and data from the Rmd setup
+tx2gene <- read.csv(paste0(working_dir, "dm6.hg38.tx2gene.csv"), header = TRUE)
+samples <- read.csv(paste0(working_dir, "samplesheet_DESeq2.csv"), header = TRUE)
+features <- read.table(paste0(working_dir, "dm6.hg38.gtf_gene_annotation_table.txt"), header = TRUE, fill = TRUE)
+files <- file.path(working_dir, "salmon_quant", samples$sample, "quant.sf")
+names(files) <- samples$sample
+
+# Create a tximport object
+txi <- tximport(files, type = "salmon", tx2gene = tx2gene)
+
+# Extract mean gene lengths from txi
+gene_lengths <- rowMeans(txi$length)
+
+# Filter out dm6 genes based on chromosome information in the features file
+dm6_genes <- features %>% filter(grepl("dm6", Chromosome)) %>% pull(gene_id)
+valid_rows <- !rownames(txi$counts) %in% dm6_genes
+
+count_data <- txi$counts[valid_rows, ]
+gene_lengths <- gene_lengths[valid_rows]
+
+# Transform counts to TPM
+tpm_data <- counts_to_tpm(count_data, gene_lengths)
+```
+
+```{r plot heatmap}
+# Define comparisons (unlimited list)
+comparisons <- list(c("GSK591_cytoplasm", "DMSO_cytoplasm"),
+                    c("GSK591_nucleoplasm", "DMSO_nucleoplasm"),
+                    c("GSK591_chromatin", "DMSO_chromatin"))
+
+# Plot z-scores with specified top genes and clusters
+number_genes_map <- 2000  # Example: number of top genes to plot
+num_clusters <- 3  # Example: number of clusters
+result <- plot_zscores(tpm_data, comparisons, number_genes_map, num_clusters)
+heatmap_plot <- result$heatmap_plot
+cluster_lists <- result$cluster_lists
+
+# Print heatmap
+print(heatmap_plot)
+
+# Save the heatmap as a pdf file
+pdf("TPM_zscore_heatmap.pdf")
+print(heatmap_plot)
+dev.off()
+
+
+
+
+# Run clusterProfiler on clusters
+go_gene_list <- unique(sort(rownames(tpm_data)))
+
+#run cluster profiler
+profiler_results <- run_cluster_profiler(cluster_lists, go_gene_list)
+results_list <- profiler_results$results_list
+grid_plots <- profiler_results$grid_plots
+
+# Print the bubble plots for GO enrichment results
+print(grid_plots)
+
+# Save the GO enrichment bubble plots as a pdf file
+pdf("GO_enrichment_bubble_plots.pdf")
+print(grid_plots)
+dev.off()
+
+# Output gene names in each cluster
+for (i in 1:length(cluster_lists)) {
+  cat("Cluster", i, "genes:\n")
+  print(cluster_lists[[i]])
+}
+
+```

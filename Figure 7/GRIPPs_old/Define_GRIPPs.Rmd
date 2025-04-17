@@ -1,0 +1,309 @@
+---
+title: "GRIPP Definition"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+author: "David Shechter, Maxim Maron, and Joe DeAngelo"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+###Introduction
+
+*This analysis refines the definition of GRIPPs by integrating: 1. Chromatin-retained genes (Fig 6) 2. Retained introns (Fig 7) 3. Accounting for multiple retained introns per gene using summary metrics*
+
+This analysis requires STAR mapping to a joint hg38-dm6 genome and a pre-built gtf with "dm6" in the Chromsome column for any control spike-in gene. These files are available at [www.github.com/shechterlab](www.github.com/shechterlab)
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(data.table)
+
+# Set the WD here
+manuscript_dir <- 'C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/'
+working_dir <- 'C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 7/GRIPPs/'
+knitr::opts_knit$set(root.dir = normalizePath(working_dir))
+setwd(working_dir)
+getwd()
+
+# Create output directory
+output_dir <- paste0(working_dir, "Output/")
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir)
+  }
+
+```
+
+
+```{r load and process data}
+
+# Load chromatin-enriched genes (Fig 6)
+chromatin_data <- read.csv(paste0(manuscript_dir, "Figure 6/Output/GSK591_chromatin_vs_DMSO_chromatin_SpikeInNormalized_DESEQ2.csv"))
+
+chromatin_genes <- chromatin_data %>%
+  filter(padj < 0.05 & log2FoldChange > 0.58) %>%
+  dplyr::select(GeneSymbol, log2FoldChange, padj) %>%
+  mutate(Source = "Chromatin_Enriched")
+
+# Load retained introns (Fig 7)
+intron_data <- read.csv(paste0(manuscript_dir, "Figure 7/Output/GSK591_Chromatin_vs_DMSO_Chromatin_DESeq2_results.csv"))
+
+intron_data <- intron_data %>%
+  mutate(GeneSymbol = sub(":.*", "", IntronID))  # Extract GeneSymbol from IntronID
+
+# Load intron and exon counts
+intron_counts <- fread(paste0(manuscript_dir, "Figure 7/featureCounts_IntronsExons/Intron_Count_hg38_dm6_A549_frac_PRMTi_s2.txt")) %>%
+  mutate(GeneSymbol = sub(":.*", "", Geneid)) %>%
+  group_by(GeneSymbol) %>%
+  summarise(Total_Intron_Reads = sum(rowSums(across(starts_with("DMSO") | starts_with("GSK591")))))
+
+exon_counts <- fread(paste0(manuscript_dir, "Figure 7/featureCounts_IntronsExons/Exon_Count_hg38_dm6_A549_frac_PRMTi_s2.txt")) %>%
+  mutate(GeneSymbol = sub(":.*", "", Geneid)) %>%
+  group_by(GeneSymbol) %>%
+  summarise(Total_Exon_Reads = sum(rowSums(across(starts_with("DMSO") | starts_with("GSK591")))))
+
+# Merge and calculate IntronExon_Ratio
+gene_counts <- intron_counts %>%
+  inner_join(exon_counts, by = "GeneSymbol") %>%
+  mutate(IntronExon_Ratio = Total_Intron_Reads / Total_Exon_Reads)
+
+# Recalculate IntronExon_Ratio (if missing)
+count_ratios <- intron_counts %>%
+  inner_join(exon_counts, by = "GeneSymbol") %>%
+  mutate(IntronExon_Ratio = Total_Intron_Reads / Total_Exon_Reads)
+
+# Merge counts with intron data
+intron_data <- intron_data %>%
+  inner_join(count_ratios, by = "GeneSymbol")
+
+# Filter significantly retained introns
+retained_introns <- intron_data %>%
+  filter(padj < 0.1 & log2FoldChange > 0.5)
+
+# Summarize introns at the gene level
+intron_summary <- retained_introns %>%
+  group_by(GeneSymbol) %>%
+  summarise(
+    Avg_Intron_FC = mean(log2FoldChange),
+    Median_Intron_FC = median(log2FoldChange),
+    Avg_IntronExon_Ratio = mean(IntronExon_Ratio),
+    Median_IntronExon_Ratio = median(IntronExon_Ratio),
+    Num_Retained_Introns = n_distinct(IntronID)
+  )
+
+```
+
+#GRIPPS definition
+
+##Chromatin Retention as a Key Criterion
+
+*Chromatin-associated genes are an essential component of the GRIPP definition. Using log2FoldChange (scaled or unscaled) ensures that only genes with strong chromatin enrichment contribute significantly to the GRIPP score.*
+
+##Normalization Across Genes:
+
+*z-score scaled Chromatin FC ensures that the metric is standardized, allowing fair comparison across genes, even if their absolute fold-change values differ greatly. Without scaling, highly expressed genes with moderate fold changes might dominate.*
+
+##Combined Metric:
+
+*By combining Chromatin FC with Avg_IntronExon_Ratio, you ensure that genes meeting both criteria (strong chromatin enrichment and significant intron retention) are emphasized. This helps filter out false positives where only one feature is significant.*
+
+
+```{r define GRIPPs}
+
+
+# Merge with chromatin-enriched genes
+combined_data <- chromatin_genes %>%
+  inner_join(intron_summary, by = "GeneSymbol")
+
+
+# Scale metrics (by Z-score) and calculate GRIPP_Score
+combined_data <- combined_data %>%
+  mutate(
+    Scaled_Chromatin_FC = (log2FoldChange - mean(log2FoldChange)) / sd(log2FoldChange),
+    Scaled_Intron_FC = (Avg_Intron_FC - mean(Avg_Intron_FC)) / sd(Avg_Intron_FC),
+    Scaled_IntronExon_Ratio = (Avg_IntronExon_Ratio - mean(Avg_IntronExon_Ratio)) / sd(Avg_IntronExon_Ratio),
+    GRIPP_Score = sqrt(Scaled_Chromatin_FC * (5 + Scaled_IntronExon_Ratio)), #geometric mean
+    GRIPP_Definition = GRIPP_Score > 0.1  # Threshold
+  )
+
+#sanity check, print histograms
+
+hist(combined_data$Scaled_Chromatin_FC, main = "Distribution of zscore Scaled Chromatin FC", xlab = "Scaled Chromatin FC", plot = TRUE)
+
+hist(combined_data$Scaled_IntronExon_Ratio, main = "Distribution of Scaled Intron FC", xlab = "Scaled Intron FC", plot = TRUE)
+
+
+#Method 2 - rank analysis
+# Rank metrics
+#combined_data <- combined_data %>%
+#  mutate(
+#    Rank_Chromatin_FC = rank(-log2FoldChange),  # Higher FC gets higher rank
+#    Rank_IntronExon_Ratio = rank(-Avg_IntronExon_Ratio),  # Higher ratio gets higher rank
+#    Rank_Intron_FC = rank(-Avg_Intron_FC)  # Higher FC gets higher rank (optional)
+#  )
+
+# Combine ranks (adjust weights as needed)
+#combined_data <- combined_data %>%
+#  mutate(
+#    Composite_Rank = 0.5 * Rank_Chromatin_FC + 0.5 * Rank_Intron_FC,  # Weighted sum
+#    GRIPP_Definition = Composite_Rank <= quantile(Composite_Rank, 0.25)  # Top 10% as GRIPPs
+#  )
+
+# Filter for GRIPPs
+#gripps <- combined_data %>%
+ # filter(GRIPP_Definition) %>%
+#  arrange(Composite_Rank)
+
+
+
+
+# Filter for GRIPPs
+gripps <- combined_data %>%
+  filter(GRIPP_Definition) %>%
+  arrange(desc(GRIPP_Score))
+
+# Save output
+write.csv(gripps, file = paste0(output_dir, "GRIPPs_Updated.csv"), row.names = FALSE)
+
+# Summarize GRIPPs
+summary_table <- gripps %>%
+  summarise(
+    Total_GRIPPs = n(),
+    Mean_GRIPP_Score = mean(GRIPP_Score),
+    Median_GRIPP_Score = median(GRIPP_Score)
+  )
+print(summary_table)
+
+
+```
+
+```{r visualize GRIPPs}
+
+
+# Bar plot of GRIPP metrics
+ggplot(gripps, aes(x = reorder(GeneSymbol, -GRIPP_Score), y = GRIPP_Score)) +
+  geom_bar(stat = "identity", fill = "#2D8942") +
+  theme_minimal() +
+  labs(
+    title = "GRIPP Scores by Gene",
+    x = "Gene ID",
+    y = "GRIPP Score"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+```{r scatter plots}
+
+# Scatter plot for Chromatin FC Rank vs Intron FC Rank
+plot_gene_vs_introns <- ggplot(combined_data, aes(x = Rank_Chromatin_FC, y = Rank_Intron_FC)) +
+  geom_point(alpha = 0.6, color = "#2D86B2") +
+  theme_minimal() +
+  labs(
+    title = "Scatter Plot: Chromatin FC Rank vs Intron FC Rank",
+    x = "Chromatin FC Rank",
+    y = "Intron FC Rank"
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))  # Center the title
+
+# Print the plot
+print(plot_gene_vs_introns)
+
+
+# Scatter plot for Chromatin FC Rank vs Intron FC Rank
+plot_gene_vs_intronExonRatio <- ggplot(combined_data, aes(x = Rank_Chromatin_FC, y = Rank_IntronExon_Ratio)) +
+  geom_point(alpha = 0.6, color = "#2D8942") +
+  theme_minimal() +
+  labs(
+    title = "Scatter Plot: Chromatin FC Rank vs IntronExonRatio Rank",
+    x = "Chromatin FC Rank",
+    y = "IntronExon Rank"
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))  # Center the title
+
+# Print the plot
+print(plot_gene_vs_intronExonRatio)
+
+
+ # Scatter plot for Chromatin log2FC vs Avg Intron log2FC
+> plot_log2fc <- ggplot(combined_data, aes(x = log2FoldChange, y = Avg_Intron_FC)) +
++     geom_point(alpha = 0.6, color = "#2D86B2") +
++     theme_minimal() +
++     labs(
++         title = "Scatter Plot: Chromatin log2FC vs Intron log2FC",
++         x = "Chromatin log2 Fold Change (log2FC)",
++         y = "Average Intron log2 Fold Change (Avg_Intron_FC)"
++     ) +
++     geom_smooth(method = "lm", color = "red", se = FALSE) +  # Optional: Add a trendline
++     theme(plot.title = element_text(hjust = 0.5))  # Center the title
+> 
+> # Print the plot
+> print(plot_log2fc)
+
+
+```
+
+
+```{r intronexon ratios for fractions}
+# Load intron counts, skipping the first comment line
+intron_counts <- fread(
+  paste0(manuscript_dir, "Figure 7/featureCounts_IntronsExons/Intron_Count_hg38_dm6_A549_frac_PRMTi_s2.txt"),
+  skip = 1
+) %>%
+  mutate(GeneSymbol = sub(":.*", "", Geneid)) %>%
+  group_by(GeneSymbol) %>%
+  summarise(
+    Chromatin_Intron_Reads = rowSums(across(starts_with("Chromatin"))),
+    Nucleoplasm_Intron_Reads = rowSums(across(starts_with("Nucleoplasm"))),
+    Cytoplasm_Intron_Reads = rowSums(across(starts_with("Cytoplasm")))
+  )
+
+# Load exon counts, skipping the first comment line
+exon_counts <- fread(
+  paste0(manuscript_dir, "Figure 7/featureCounts_IntronsExons/Exon_Count_hg38_dm6_A549_frac_PRMTi_s2.txt"),
+  skip = 1
+) %>%
+  mutate(GeneSymbol = sub(":.*", "", Geneid)) %>%
+  group_by(GeneSymbol) %>%
+  summarise(
+    Chromatin_Exon_Reads = rowSums(across(starts_with("Chromatin"))),
+    Nucleoplasm_Exon_Reads = rowSums(across(starts_with("Nucleoplasm"))),
+    Cytoplasm_Exon_Reads = rowSums(across(starts_with("Cytoplasm")))
+  )
+
+# Merge intron and exon counts for each fraction
+fraction_ratios <- intron_counts %>%
+  inner_join(exon_counts, by = "GeneSymbol") %>%
+  mutate(
+    Chromatin_IntronExon_Ratio = Chromatin_Intron_Reads / Chromatin_Exon_Reads,
+    Nucleoplasm_IntronExon_Ratio = Nucleoplasm_Intron_Reads / Nucleoplasm_Exon_Reads,
+    Cytoplasm_IntronExon_Ratio = Cytoplasm_Intron_Reads / Cytoplasm_Exon_Reads
+  )
+
+# Filter genes with valid ratios (to avoid division by zero)
+fraction_ratios <- fraction_ratios %>%
+  filter(is.finite(Chromatin_IntronExon_Ratio),
+         is.finite(Nucleoplasm_IntronExon_Ratio),
+         is.finite(Cytoplasm_IntronExon_Ratio))
+
+# Visualize chromatin vs nucleoplasm ratios
+ggplot(fraction_ratios, aes(x = Chromatin_IntronExon_Ratio, y = Nucleoplasm_IntronExon_Ratio)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  theme_minimal() +
+  labs(
+    title = "Chromatin vs Nucleoplasm: Per-Gene Intron/Exon Ratios",
+    x = "Chromatin Intron/Exon Ratio",
+    y = "Nucleoplasm Intron/Exon Ratio"
+  ) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red")
+
+# Visualize chromatin vs cytoplasm ratios
+ggplot(fraction_ratios, aes(x = Chromatin_IntronExon_Ratio, y = Cytoplasm_IntronExon_Ratio)) +
+  geom_point(alpha = 0.5, color = "green") +
+  theme_minimal() +
+  labs(
+    title = "Chromatin vs Cytoplasm: Per-Gene Intron/Exon Ratios",
+    x = "Chromatin Intron/Exon Ratio",
+    y = "Cytoplasm Intron/Exon Ratio"
+  ) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red")
+
+```
