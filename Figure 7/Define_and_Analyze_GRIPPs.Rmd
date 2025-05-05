@@ -51,7 +51,7 @@ deseq_data <- read_csv(input_file)
 
 # Define GRIPPs: high chromatin enrichment and statistically significant
 # Adjust these thresholds as necessary
-log2fc_cutoff <- 0.58  # Log2 fold-change threshold
+log2fc_cutoff <- 2  # Log2 fold-change threshold
 pvalue_cutoff <- 0.01  # Adjusted p-value threshold
 
 gripps <- deseq_data %>%
@@ -175,7 +175,7 @@ print(gene_class_plot)
 
 ```
 
-```{r GRIPPs clusterProfiler, eval = FALSE}
+```{r GRIPPs clusterProfiler, include = FALSE}
 # Load libraries
 library(clusterProfiler)
 library(org.Hs.eg.db)  # Human genome annotations
@@ -234,13 +234,13 @@ kegg_enrichment <- enrichKEGG(
 )
 
 # Plot results
-if (!is.null(go_enrichment_BP) && nrow(go_enrichment) > 0) {
-  print(dotplot(go_enrichment, showCategory = 5) + ggtitle("GO BP Enrichment: GRIPPs"))
+if (!is.null(go_enrichment_BP) > 0) {
+  print(dotplot(go_enrichment_BP, showCategory = 5) + ggtitle("GO BP Enrichment: GRIPPs"))
 } else {
   message("No significant GO BP terms found.")
 }
 
-if (!is.null(go_enrichment_MF) && nrow(go_enrichment) > 0) {
+if (!is.null(go_enrichment_MF) > 0) {
 print(dotplot(go_enrichment_MF, showCategory = 5) + ggtitle("GO MF Enrichment: GRIPPs"))
 } else {
   message("No significant GO MF terms found.")
