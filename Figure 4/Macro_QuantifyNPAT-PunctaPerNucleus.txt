@@ -1,0 +1,81 @@
+dir = "/Users/jacobroth/Library/CloudStorage/OneDrive-Personal/RothJacob_PhDFiles/1-Projects/2-Experiments/JSRe0141-T_Cellular_NB04-189_WDR79-Coilin-KndnIF/4-data_processed/";
+
+
+Batch = "20240204_Batch_02/"
+Slide = "JSRs046_Stitch_01/"
+
+CH1 = "FF-Stitched_DAPI_CH1"
+CH2 = "FF-Stitched_WDR79_CH2"
+CH3 = "FF-Stitched_Actin_CH3"
+CH4 = "FF-Stitched_NPAT_CH4"
+
+run("Fresh Start"); // this removes all images and saved data
+// https://forum.image.sc/t/fresh-start-macro-command-in-imagej-fiji/43102/7
+// run("Fresh Start", "images results rois"); // to note remove images, results, or rois
+
+// Open the DAPI image
+open(dir + Batch + Slide + CH1 + ".tif");
+rename(CH1);
+rename("DAPI");
+
+// Convert RGB to 16-bit
+run("16-bit");
+
+// Threshold the DAPI image
+setAutoThreshold("RenyiEntropy dark no-reset");
+run("Convert to Mask");
+run("Fill Holes");
+run("Watershed");
+
+// Analyze particles to get the ROIs of the nuclei and measure their size
+run("Set Measurements...", "area redirect=None decimal=3");
+run("Analyze Particles...", "size=0.1-6 circularity=0.00-1.00 show=Outlines display exclude add");
+
+// Store the initial count of ROIs and nucleus sizes
+initialROICount = roiManager("count");
+nucleusSizes = newArray(initialROICount);
+for (j = 0; j < initialROICount; j++) {
+    nucleusSizes[j] = getResult("Area", j);
+}
+
+// Clear the results table after storing nucleus sizes
+run("Clear Results");
+
+// Open the NPAT image
+open(dir + Batch + Slide + CH4 + ".tif");
+rename(CH4);
+
+// Convert RGB to 16-bit
+run("16-bit");
+// Threshold the NPAT image
+// RenyiEntropy, intermodes, max, minimum, shanbhag, yen, maxentropy looked good
+setAutoThreshold("RenyiEntropy dark no-reset"); // RenyiEntropy captured some of the diffuse areas but not all; Max Entropy seems to be better at diffuse; Intermodes is only puncta; minimum is too few puncta missing some
+run("Convert to Mask");
+run("Fill Holes");
+
+// Array to store NPAT counts
+NPATCounts = newArray(initialROICount);
+
+// For each initial ROI, select it and analyze the NPAT puncta within
+for (i = 0; i < initialROICount; i++) {
+    roiManager("Select", i);
+    // Count the number of NPAT puncta within the ROI
+    run("Analyze Particles...", "size=0.0005-0.1 circularity=0.00-1.00 show=Nothing clear");
+    // Store the count of NPAT puncta
+    NPATCounts[i] = nResults;
+}
+
+
+// Populate the Results table with the data
+for (i = 0; i < initialROICount; i++) {
+    setResult("Nucleus", i, i + 1);
+    setResult("Nucleus Size", i, nucleusSizes[i]);
+    setResult("NPAT Count", i, NPATCounts[i]);
+    updateResults();
+}
+
+// Save the Results table
+saveAs("Results", dir + Batch + Slide + "/NucleusNPATCounts-Batch02_Macro-B.csv");
+
+run("Fresh Start"); // this removes all images and saved data
+
