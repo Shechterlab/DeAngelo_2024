@@ -31,16 +31,16 @@ library(ggpubr)
 library(stringr)
 
 # Set working directory
-working_dir <- "C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 6/GRIPPs"
+working_dir <- "C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 7/GRIPPs"
 setwd(working_dir)
 output_dir <- file.path(working_dir, "output")
 dir.create(output_dir, showWarnings = FALSE)
 
 # Input files
-DMSO_chromatin_vs_cytoplasm_file <- "../Output/DMSO_chromatin_vs_DMSO_cytoplasm_SpikeInNormalized_DESEQ2.csv"
-prmt5_chromatin_vs_cytoplasm_file <- "../Output/GSK591_chromatin_vs_GSK591_cytoplasm_SpikeInNormalized_DESEQ2.csv"
-gencode_gtf <- "../data/gencode.v48.annotation.gtf"
-chromHMM_bed <- "../data/ENCFF343YVN_A549-hg38_chromHMM-18-EtOH.bed"
+DMSO_chromatin_vs_cytoplasm_file <- "C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 6/Output/DMSO_chromatin_vs_DMSO_cytoplasm_SpikeInNormalized_DESEQ2.csv"
+prmt5_chromatin_vs_cytoplasm_file <- "C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 6/Output/GSK591_chromatin_vs_GSK591_cytoplasm_SpikeInNormalized_DESEQ2.csv"
+gencode_gtf <- "C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 6/data/gencode.v48.annotation.gtf"
+chromHMM_bed <- "C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 6/data/ENCFF343YVN_A549-hg38_chromHMM-18-EtOH.bed"
 
 # Cutoffs
 cutoff <- list(log2FC = 2, padj = 0.01)
@@ -84,6 +84,7 @@ write.csv(prmt5_gripps, file.path(output_dir, "PRMT5-GRIPPs.csv"), row.names = F
 ```{r venn-diagram}
 venn_counts <- list(GRIPPs = gripps$gene_id, `PRMT5-GRIPPs` = prmt5_gripps$gene_id)
 eul <- euler(venn_counts)
+
 venn_plot <- plot(eul, 
                   fills = list(fill = c("gray", "#2D8942"), alpha = 0.8), 
                   quantities = TRUE, 
@@ -158,70 +159,190 @@ get_promoters_bed(prmt5_gripps$gene_id, "PRMT5-GRIPPs")
 
 ```
 
-## ChromHMM Enrichment of Promoters
 
-```{r chromHMM-promoters}
-
-plot_chromHMM <- function(label) {
-  bed_file <- file.path(output_dir, paste0(label, "_promoters.bed"))
-  if (!file.exists(bed_file)) return(NULL)
-  promoters_bed <- read.table(bed_file, header = FALSE)
-  if (nrow(promoters_bed) == 0) return(NULL)
-  colnames(promoters_bed) <- c("chrom", "start", "end", "gene_id", "gene_symbol", "strand")
-
-  chromHMM <- fread(chromHMM_bed)
-  colnames(chromHMM) <- c("chrom", "start", "end", "state", "score", "strand", "thickStart", "thickEnd", "rgb")
-
-  promoters_gr <- GRanges(seqnames = promoters_bed$chrom,
-                          ranges = IRanges(promoters_bed$start, promoters_bed$end))
-  states_gr <- GRanges(seqnames = chromHMM$chrom,
-                       ranges = IRanges(chromHMM$start, chromHMM$end),
-                       state = chromHMM$state)
-
-  hits <- findOverlaps(promoters_gr, states_gr)
-  overlap_states <- mcols(states_gr)$state[subjectHits(hits)]
-  overlap_df <- data.frame(state = overlap_states) %>% dplyr::count(state)
-
-  state_totals <- as.data.frame(mcols(states_gr)) %>% dplyr::count(state)
-  overlap_df <- dplyr::left_join(overlap_df, state_totals, by = "state") %>%
-    dplyr::mutate(percent = 100 * n.x / n.y)
-
-  ggplot(overlap_df, aes(x = reorder(state, -percent), y = percent)) +
-    geom_bar(stat = "identity") +
-    coord_flip() +
-    theme_minimal() +
-    labs(title = paste("Promoter overlap with ChromHMM states:", label),
-         x = "ChromHMM State", y = "% Overlap")
-}
-
-plot_chromHMM("GRIPPs")
-plot_chromHMM("PRMT5-GRIPPs")
-
-```
-
-## GO Enrichment for GRIPPs and PRMT5-GRIPPs
+## GO Enrichment and Gene Biotype Summary
 
 ```{r go-enrichment}
-# CompareCluster to combine both groups into one enrichment plot
-combined_gene_list <- list(
-  GRIPPs = gripps$gene_id,
-  `PRMT5-GRIPPs` = prmt5_gripps$gene_id
+# Convert gene IDs to ENTREZ for clusterProfiler
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(biomaRt)
+
+# ID conversion
+gene_conversion <- bitr(
+  unique(c(gripps$gene_id, prmt5_gripps$gene_id)),
+  fromType = "ENSEMBL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
 )
 
-go_compare <- compareCluster(
-  geneCluster = combined_gene_list,
+# Add group label
+gene_conversion$group <- ifelse(
+  gene_conversion$ENSEMBL %in% gripps$gene_id,
+  "GRIPPs", "PRMT5-GRIPPs"
+)
+
+# CompareCluster for BP, MF, CC
+cc_bp <- compareCluster(
+  ENTREZID ~ group,
+  data = gene_conversion,
   fun = "enrichGO",
   OrgDb = org.Hs.eg.db,
-  keyType = "ENSEMBL",
   ont = "BP",
   pAdjustMethod = "BH",
   qvalueCutoff = 0.05,
   readable = TRUE
 )
 
-compare_plot <- enrichplot::dotplot(go_compare, showCategory = 10) +
-  ggtitle("GO Biological Process Enrichment: GRIPPs vs PRMT5-GRIPPs")
+cc_mf <- compareCluster(
+  ENTREZID ~ group,
+  data = gene_conversion,
+  fun = "enrichGO",
+  OrgDb = org.Hs.eg.db,
+  ont = "MF",
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
 
-print(compare_plot)
-ggsave(file.path(output_dir, "GO_compare_GRIPPs_PRMT5-GRIPPs.pdf"), plot = compare_plot, width = 8, height = 6)
+cc_cc <- compareCluster(
+  ENTREZID ~ group,
+  data = gene_conversion,
+  fun = "enrichGO",
+  OrgDb = org.Hs.eg.db,
+  ont = "CC",
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+# KEGG pathway enrichment
+kegg_cc <- compareCluster(
+  ENTREZID ~ group,
+  data = gene_conversion,
+  fun = "enrichKEGG",
+  organism = "hsa",
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05
+)
+
+# Plot and save
+plots <- list(
+  BP = cc_bp,
+  MF = cc_mf,
+  CC = cc_cc,
+  KEGG = kegg_cc
+)
+
+for (ont in names(plots)) {
+  p <- enrichplot::dotplot(plots[[ont]], showCategory = 8) +
+    ggtitle(paste("Enrichment:", ont, "- GRIPPs vs PRMT5-GRIPPs"))
+  print(p)
+  ggsave(file.path(output_dir, paste0("GO_compare_", ont, "_GRIPPs_PRMT5-GRIPPs.pdf")),
+         plot = p, width = 8, height = 6)
+}
+
+#### Now run individual Ontology analysis for GRIPPs:
+
+# 1. Extract ENTREZ lists for each group
+gripps_entrez   <- gene_conversion$ENTREZID[ gene_conversion$group == "GRIPPs" ]
+prmt5_entrez    <- gene_conversion$ENTREZID[ gene_conversion$group == "PRMT5-GRIPPs" ]
+
+# 2. Run GO BP ORA
+ego_gripps_bp   <- enrichGO(
+  gene          = gripps_entrez,
+  OrgDb         = org.Hs.eg.db,
+  ont           = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05,
+  readable      = TRUE
+)
+
+ego_prmt5_bp    <- enrichGO(
+  gene          = prmt5_entrez,
+  OrgDb         = org.Hs.eg.db,
+  ont           = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05,
+  readable      = TRUE
+)
+
+# 2. Run GO MF ORA
+ego_gripps_mf   <- enrichGO(
+  gene          = gripps_entrez,
+  OrgDb         = org.Hs.eg.db,
+  ont           = "MF",
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05,
+  readable      = TRUE
+)
+
+ego_prmt5_mf    <- enrichGO(
+  gene          = prmt5_entrez,
+  OrgDb         = org.Hs.eg.db,
+  ont           = "MF",
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05,
+  readable      = TRUE
+)
+
+# 3. Dotplots
+p1 <- dotplot(ego_gripps_bp, showCategory = 12) +
+      ggtitle("GO BP Enrichment — GRIPPs")
+
+p2 <- dotplot(ego_prmt5_bp, showCategory = 12) +
+      ggtitle("GO BP Enrichment — PRMT5-GRIPPs")
+
+p3 <- dotplot(ego_gripps_mf, showCategory = 12) +
+      ggtitle("GO MF Enrichment — GRIPPs")
+
+p4 <- dotplot(ego_prmt5_mf, showCategory = 12) +
+      ggtitle("GO MF Enrichment — PRMT5-GRIPPs")
+
+
+print(p1); print(p2)
+print(p3); print(p4)
+
+ggsave(file.path(output_dir, "GO_BP_GRIPPs_dotplot.pdf"),   p1, width=7, height=5)
+ggsave(file.path(output_dir, "GO_BP_PRMT5-GRIPPs_dotplot.pdf"), p2, width=7, height=5)
+ggsave(file.path(output_dir, "GO_MF_GRIPPs_dotplot.pdf"),   p3, width=7, height=5)
+ggsave(file.path(output_dir, "GO_MF_PRMT5-GRIPPs_dotplot.pdf"), p4, width=7, height=5)
+```
+
+```{r gene-biotype-summary}
+# Get gene biotypes
+mart <- useMart("ENSEMBL_MART_ENSEMBL", dataset = "hsapiens_gene_ensembl", host = "https://www.ensembl.org")
+
+biotypes <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol", "gene_biotype"),
+  filters = "ensembl_gene_id",
+  values = unique(c(gripps$gene_id, prmt5_gripps$gene_id)),
+  mart = mart
+)
+
+biotypes$Group <- ifelse(biotypes$ensembl_gene_id %in% gripps$gene_id, "GRIPPs", "PRMT5-GRIPPs")
+
+# Collapse gene types for display
+summary_df <- biotypes %>%
+  dplyr::mutate(
+    RNA_Class = case_when(
+      grepl("pseudogene", gene_biotype, ignore.case = TRUE) ~ "Pseudogene",
+      gene_biotype == "TEC" ~ "TEC",
+      gene_biotype == "lncRNA" ~ "lncRNA",
+      gene_biotype == "protein_coding" ~ "protein_coding",
+      TRUE ~ "other"
+    )
+  ) %>%
+  dplyr::group_by(Group, RNA_Class) %>%
+  dplyr::summarise(Count = dplyr::n()) %>%
+  dplyr::mutate(Percentage = 100 * Count / sum(Count))
+
+# Generate the stacked bar plot
+
+
 ```

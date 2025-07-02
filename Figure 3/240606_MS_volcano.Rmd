@@ -1,0 +1,192 @@
+---
+title: "240606_ChromatinEnrichedvsMS"
+author: "JD"
+date: "2024-06-06"
+output: html_document
+---
+
+
+```{r "setup", include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath('/Users/joedeangelo/Library/CloudStorage/OneDrive-Personal/'))
+```
+
+```{r Data load and process}
+##load libraries
+library(tidyverse)
+library(dplyr)
+library(VennDiagram)
+library(RColorBrewer)
+library(GeneOverlap)
+library(ggplot2)
+library(lubridate)
+
+date <- ymd(today())
+
+D2_MS <- readxl::read_xlsx('Shechter Lab/Data/Mass Spec/240606_GSK591_2day/Results Joe - Proteome June 2024.xlsx', sheet = 3)
+D2_MS <- as.data.frame(D2_MS)
+#only keep gene symbol and raw data, will recalulate log2c and pvalue
+D2_MS <- D2_MS[,c(3, 12:19, 9)]
+D2_MS <- D2_MS %>% rename(neglog2pval = "p-value")
+D2_MS <- D2_MS %>% rename(GeneSymbol = "Gene Symbol")
+D2_MS$log2FC <- rowMeans(D2_MS[,c(6:9)]) - rowMeans(D2_MS[,c(2:5)]) #since in log2 abundace can calculate via experimental-control
+
+
+
+#troubleshooting some pvalue issues, so double checking 
+# D2_MS <- D2_MS[complete.cases(D2_MS[, c(2:9)]), ]
+# D2_MS[, 2:9] <- apply(D2_MS[, 2:9], 2, function(x) as.numeric(as.character(x)))
+# 
+# D2_MS$pval <- apply(D2_MS, 1, function(x) {
+#     
+#         ttest_result <- t.test(x[6:9], x[2:5], na.rm = TRUE)
+#         return(ttest_result$p.value)
+#   })
+# 
+# ttest_result <- t.test(D2_MS[3,6:9], D2_MS[3,2:5])
+# print(-log2(ttest_result$p.value))
+
+# # Check if all values in columns 2 to 9 are numeric
+# all_numeric <- sapply(D2_MS[, 2:9], function(x) all(!is.na(as.numeric(x))))
+# 
+# # Check if all columns are numeric
+# if (all(all_numeric)) {
+#   print("All columns are numeric.")
+# } else {
+#   print("Some columns are not numeric.")
+# }
+```
+
+```{r load RNA data and filter for enriched genes only}
+##build RNA data
+GvD_chromatin_spike <- read.table('2024-05_PRMT5i-Fractionation/2024-06-02 First Run output/condition_GSK591_chromatin_vs_DMSO_chromatinchromatin_DESEQ2_DmSpikeIn.csv', sep = ',', header = T)
+GvD_cytoplasm_spike <- read.table('2024-05_PRMT5i-Fractionation/2024-06-02 First Run output/condition_GSK591_cytoplasm_vs_DMSO_cytoplasmcytoplasm_DESEQ2_DmSpikeIn.csv', sep = ',', header = T)
+GvD_nucleoplsm_spike <- read.table('2024-05_PRMT5i-Fractionation/2024-06-02 First Run output/condition_GSK591_nucleoplasm_vs_DMSO_nucleoplasmnucleoplasm_DESEQ2_DmSpikeIn.csv', sep = ',', header = T)
+
+#make list of all data
+GvDdata <- list(GvD_chromatin_spike = GvD_chromatin_spike, GvD_nucleoplasm_spike = GvD_nucleoplsm_spike, GvD_cytoplasm_spike = GvD_cytoplasm_spike)
+
+#make list of sig genes/compartment
+Enriched_genes <- lapply(GvDdata, function(x) {x <- x[x$padj < 0.05,];x})
+#filter for only significantly upregulated genes (will start with a less stringent cutoff of log2 > 0.58 = 1.5x)
+Enriched_genes <- lapply(Enriched_genes, function(x) {x <- x[x$log2FoldChange >= .58,];x})
+
+#filter for protein coding transcripts only
+Enriched_genes <- lapply(Enriched_genes, function(x) x[x$Class == "protein_coding", ])
+
+
+# Export each data frame in filtered_df_list as a CSV file with names including the data frame names
+# lapply(names(Enriched_genes), function(name) {
+#   write.csv(Enriched_genes[[name]], file = paste0("Shechter Lab/Data/Mass Spec/240606_GSK591_2day/EnrichedGenes_", name, ".csv"), row.names = FALSE)
+# })
+
+#same thing but for depleted genes
+Depleted_genes <- lapply(GvDdata, function(x) {x <- x[x$padj < 0.05,];x})
+#filter for only significantly upregulated genes (will start with a less stringent cutoff of log2 > 0.58 = 1.5x)
+Depleted_genes <- lapply(Depleted_genes, function(x) {x <- x[x$log2FoldChange <= -.58,];x})
+#filter for protein coding transcripts only
+Depleted_genes <- lapply(Depleted_genes, function(x) x[x$Class == "protein_coding", ])
+
+# Export each data frame in filtered_df_list as a CSV file with names including the data frame names
+# lapply(names(Depleted_genes), function(name) {
+#   write.csv(Depleted_genes[[name]], file = paste0("Shechter Lab/Data/Mass Spec/240606_GSK591_2day/DepletedGenes_", name, ".csv"), row.names = FALSE)
+# })
+```
+
+```{r make volcano plot of data}
+library(ggplot2)
+library(ggrepel)
+
+#print min and max log2Fc for axis 
+cat("Mac FC:", max(D2_MS$log2FC), ", Min FC:", min(D2_MS$log2FC), "\n")
+
+#for DMSOvGSK591
+ggplot(D2_MS, 
+       aes(x = log2FC, y = neglog2pval)) + 
+  geom_point(size = 1, alpha = 1, shape = 1) + 
+       geom_text_repel(data = subset(D2_MS,neglog2pval > 4.322 & (log2FC >=1 | log2FC <= -1)),
+                      aes(label= GeneSymbol),
+                      size=3,
+                      colour = "black",
+                      max.overlaps = 100,
+                      box.padding = 0.5,
+                      force = 50,
+                      min.segment.length = 0,
+                      direction = "both")+
+  
+  geom_point(data = . %>% filter(GeneSymbol %in% Enriched_genes$GvD_cytoplasm_spike$GeneSymbol),
+             size=1, color="goldenrod3") +
+  # 
+  # geom_point(data = . %>% filter(FC_SmBvIgG > 2 & Log2pval_SmBvIgG > 4.31), 
+  #            size=1, color="deepskyblue3") +
+  # geom_point(data = . %>% filter(FC_SmBvIgG < -2 & Log2pval_SmBvIgG > 4.31), 
+  #            size=1, color="deepskyblue3") +
+  geom_vline(xintercept = 1, color = "black", linetype = "dotted", linewidth = 0.5) +
+  geom_vline(xintercept = -1, color = "black", linetype = "dotted", linewidth = 0.5) +
+  geom_vline(xintercept = 0, color = "black", linetype = "dotted", linewidth = 0.5) +
+  geom_hline(yintercept = 4.32, color = "black", linetype = "dotted", linewidth = 0.5) +
+  theme(
+    legend.position = "none",
+        axis.text.y   = element_text(size=12, colour = "black"),
+        axis.text.x   = element_text(size=12, colour = "black"),
+        axis.title.y  = element_text(size=12, colour = "black"),
+        axis.title.x  = element_text(size=12, colour = "black"),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill=NA, linewidth=1))+
+  scale_x_continuous(breaks = (seq(-5, 5, by = 2))) +
+  #xlim(-5,5) +
+  # ylim(0,20)+
+  labs(title = "DMSO vs GSK591 (2d)", 
+       subtitle = "highlighting transcripts enriched in cytoplasm (log2=0.58 cutoff)", 
+       caption = "",
+       x = expression("Log"[2] * "FC (GSK591/DMSO)"), y = expression('-Log'[2]*'(pval)')) 
+
+ggsave(plot = last_plot(),
+       path = "OneDrive-Personal/Shechter Lab/Data/Mass Spec/240606_GSK591_2day/Figures",
+       filename = paste("DMSOvGSK591_d2_Volcano2_JD_CytoEnriched",date,".pdf",sep = ""),
+       height = 4, width = 6)
+
+```
+
+```{r Go analysis}
+
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(ggplot2)
+library(DOSE)
+
+# 
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("HDO.db")
+
+
+MS_GO_enrich <- D2_MS[D2_MS$neglog2pval > 4.322 & D2_MS$log2FC > 0.58, 1]
+
+# BP = biological process, MF = molecular function, CC = cellular component
+MS_GO_results_BP <- enrichGO(gene = MS_GO_enrich, OrgDb = "org.Hs.eg.db", keyType = "SYMBOL", ont = "BP")
+#GO_df <- as.data.frame(GO_results)
+
+barplot(MS_GO_results_BP, showCategory = 3)
+dotplot(MS_GO_results_BP, showCategory = 10) + ggtitle("dotplot of enriched genes GO_BP")
+getwd()
+ggsave(filename = "Shechter Lab/Data/Mass Spec/240606_GSK591_2day/Figures/enriched_GO_BP.pdf", plot = fit,  width = 8, height = 12)
+
+#same but for MF
+MS_GO_results_MF <- enrichGO(gene = MS_GO_enrich, OrgDb = "org.Hs.eg.db", keyType = "SYMBOL", ont = "MF")
+GO_df <- as.data.frame(GO_results_MF)
+
+fit <- plot(barplot(MS_GO_results_MF, showCategory = 10))
+ggsave(filename = "2024-05_PRMT5i-Fractionation/JoeAnalysis/detained_GO_MF.pdf", plot = fit,  width = 8, height = 12)
+
+#same but for CC
+MS_GO_results_CC <- enrichGO(gene = MS_GO_enrich, OrgDb = "org.Hs.eg.db", keyType = "SYMBOL", ont = "CC")
+GO_df <- as.data.frame(GO_results_CC)
+
+fit <- plot(barplot(MS_GO_results_CC, showCategory = 10))
+ggsave(filename = "2024-05_PRMT5i-Fractionation/JoeAnalysis/detained_GO_CC.pdf", plot = fit,  width = 8, height = 12)
+```
+
