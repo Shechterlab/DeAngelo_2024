@@ -1,0 +1,459 @@
+---
+title: "240725_detained_RI"
+author: "JD"
+date: "2024-07-26"
+output: html_document
+---
+
+```{r "setup", include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath('/Users/joedeangelo/Library/CloudStorage/OneDrive-Personal/'))
+```
+
+```{r Data load and process}
+##load libraries
+library(tidyverse)
+library(dplyr)
+
+##build data
+# GvD_chromatin_spike <- read.table('Shechter_manuscripts/2023 PRMT-pICln Axis snRNP Accumulation/Analysis/Fractionated RNA-Seq Analysis (hg38-dm6spikein)/DESeq2_Output/GSK591_Chromatin-vs-DMSO_Chromatin_SpikeInNormalized_DESEQ2.csv', sep = ',', header = T)
+# GvD_cytoplasm_spike <- read.table('Shechter_manuscripts/2023 PRMT-pICln Axis snRNP Accumulation/Analysis/Fractionated RNA-Seq Analysis (hg38-dm6spikein)/DESeq2_Output/GSK591_Cytoplasm-vs-DMSO_Cytoplasm_SpikeInNormalized_DESEQ2.csv', sep = ',', header = T)
+# GvD_nucleoplasm_spike <- read.table('Shechter_manuscripts/2023 PRMT-pICln Axis snRNP Accumulation/Analysis/Fractionated RNA-Seq Analysis (hg38-dm6spikein)/DESeq2_Output/GSK591_Nucleoplasm-vs-DMSO_Nucleoplasm_SpikeInNormalized_DESEQ2.csv', sep = ',', header = T)
+                  
+GvD_chromatin_IU <- read.table('RNAseq_PRMT5i-Fractionation/IntronExonAnalysis/hg38dm6-SpikeInAnalysis/FIRST SUBMISSION OUTPUTS/Chromatin_DMSO_vs_GSK591_spikeIn-INTRON-utilization_DESeq2.csv', sep = ',', header = T)
+GvD_cytoplasm_IU <- read.table('RNAseq_PRMT5i-Fractionation/IntronExonAnalysis/hg38dm6-SpikeInAnalysis/Old/Cytoplasm_DMSO_vs_GSK591_spikeIn-INTRON-utilization_DESeq2.csv', sep = ',', header = T)
+GvD_nucleoplasm_IU <- read.table('RNAseq_PRMT5i-Fractionation/IntronExonAnalysis/hg38dm6-SpikeInAnalysis/Old/Nucleoplasm_DMSO_vs_GSK591_spikeIn-INTRON-utilization_DESeq2.csv', sep = ',', header = T)
+
+```
+
+```{r Volcano plots}
+library(tidyverse)
+library(ggrepel)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(ggtext)
+
+GvD_chromatin_IU$log10padj <- -log10(GvD_chromatin_IU$padj)
+GvD_cytoplasm_IU$log10padj <- -log10(GvD_cytoplasm_IU$padj)
+GvD_nucleoplasm_IU$log10padj <- -log10(GvD_nucleoplasm_IU$padj)
+
+#cytoplasm plot
+p1max_abs_x <- max(abs(GvD_cytoplasm_IU$log2FoldChange))
+p1 <-
+ggplot(GvD_cytoplasm_IU, 
+       aes(x = log2FoldChange, y = log10padj)) + 
+       theme(text = element_text(family = "Arial")) + 
+       geom_point(color = "#BEBEBE", size = 1, alpha = 1, shape = 16) + 
+       # geom_text_repel(data = subset(GvD_cytoplasm_IU,log10padj > 3 & log2FoldChange > 0.58), #for upregulated labels
+       #                aes(label=GeneSymbol),
+       #                size=3,
+       #                colour = "#B2182B",
+       #                segment.color = "#B2182B",
+       #                max.overlaps = 8,
+       #                box.padding = 0.5,
+       #                force = 30,
+       #                min.segment.length = 0,
+       #                nudge_x = 0.7,
+       #                direction = "both")+
+       #  geom_text_repel(data = subset(GvD_cytoplasm_spike,log10padj > 3 & log2FoldChange < -0.58), #for downregulated labels
+       #                aes(label=GeneSymbol),
+       #                size=3,
+       #                colour = "#2166AC",
+       #                segment.color = "#2166AC",
+       #                max.overlaps = 5,
+       #                box.padding = 0.5,
+       #                force = 30,
+       #                min.segment.length = 0,
+       #                #nudge_y = 0.2,
+       #                nudge_x = -0.2,
+       #                direction = "both")+
+
+  geom_point(data = . %>% filter(log10padj > 1.301 & log2FoldChange > 0.58),
+             size=1, color="#B2182B") +
+  geom_point(data = . %>% filter(log10padj > 1.301 & log2FoldChange < -0.58), 
+              size=1, color="#2166AC") +
+  # geom_point(data = . %>% filter(FC_SmBvIgG < -2 & Log2pval_SmBvIgG > 4.31), 
+  #            size=1, color="deepskyblue3") +
+  geom_vline(xintercept = 0.58, color = "#B2182B", linetype = "dotdash", linewidth = 0.5) +
+  geom_vline(xintercept = -0.58, color = "#2166AC", linetype = "dotdash", linewidth = 0.5) +
+  geom_vline(xintercept = 0, color = "black", linetype = "solid", linewidth = 0.5) +
+  geom_hline(yintercept = 1.301, color = "grey", linetype = "dotdash", linewidth = 0.5) +
+  #coord_fixed(ratio = 0.1) +  # make plot a square, here divide total x length by y length, ignore if centered on 0 and use scale_x_continuous
+  theme(aspect.ratio=1)+
+  theme(text = element_text(family = "Arial")) + 
+  #scale_x_continuous(limits = c(-p1max_abs_x, p1max_abs_x)) + #use to center around x=0
+  theme(
+    legend.position = "none",
+        axis.text.y   = element_text(size=12, colour = "black"),
+        axis.text.x   = element_text(size=12, colour = "black"),
+        axis.title.y  = element_text(size=12, colour = "black"),
+        axis.title.x  = element_text(size=12, colour = "black"),
+        panel.background = element_blank(),
+        panel.grid.major = element_line(color = "#D3D3D380", size = 0.5),
+        panel.grid.minor = element_line(color = "#D3D3D380", size = 0.25),
+        axis.line = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill=NA, linewidth=0.5),
+        plot.title = element_markdown(size = 14, hjust = 0) # Use element_markdown to interpret Markdown in the title
+    )+  
+  #scale_x_continuous(breaks = (seq(-6, 6, by = 2))) +
+  xlim(-8,8) +
+  ylim(0,20)+
+  labs(title = "<b>Cytoplasm</b> Intron Utilization", 
+       #subtitle = "RNA-seq 2 days DMSO", 
+       caption = "",
+       x = expression(atop("log"[2] * " Fold Change", "GSK591 vs DMSO")), y = expression('-log'[10]*' padj')) 
+
+print(p1)
+
+ggsave(filename = "/Users/joedeangelo/Library/CloudStorage/OneDrive-Personal/Shechter Lab/Data/RNA-seq/2024-04-22_D2GSK_FractionatedRNA/figures/240724_GvD_cyto_UI_volcano.pdf", plot = p1,  width =6, height = 6, device = cairo_pdf)
+
+#nucleoplasm
+
+p2max_abs_x <- max(abs(GvD_nucleoplasm_spike$log2FoldChange))
+p2 <-
+ggplot(GvD_nucleoplasm_IU, 
+       aes(x = log2FoldChange, y = log10padj)) + 
+       theme(text = element_text(family = "Arial")) + 
+       geom_point(color = "#BEBEBE", size = 1, alpha = 1, shape = 16) + 
+       # geom_text_repel(data = subset(GvD_nucleoplasm_spike,log10padj > 3 & log2FoldChange > 0.58), #for upregulated labels
+       #                aes(label=GeneSymbol),
+       #                size=3,
+       #                colour = "#B2182B",
+       #                segment.color = "#B2182B",
+       #                max.overlaps = 8,
+       #                box.padding = 0.5,
+       #                force = 30,
+       #                min.segment.length = 0,
+       #                #nudge_x = 0.7,
+       #                direction = "both")+
+       #  geom_text_repel(data = subset(GvD_nucleoplasm_spike,log10padj > 1 & log2FoldChange < -0.58), #for downregulated labels
+       #                aes(label=GeneSymbol),
+       #                size=3,
+       #                colour = "#2166AC",
+       #                segment.color = "#2166AC",
+       #                max.overlaps = 5,
+       #                box.padding = 0.5,
+       #                force = 30,
+       #                min.segment.length = 0,
+       #                #nudge_y = 0.2,
+       #                nudge_x = -0.2,
+       #                direction = "both")+
+
+  geom_point(data = . %>% filter(log10padj > 1.301 & log2FoldChange > 0.58),
+             size=1, color="#B2182B") +
+  geom_point(data = . %>% filter(log10padj > 1.301 & log2FoldChange < -0.58), 
+              size=1, color="#2166AC") +
+  # geom_point(data = . %>% filter(FC_SmBvIgG < -2 & Log2pval_SmBvIgG > 4.31), 
+  #            size=1, color="deepskyblue3") +
+  geom_vline(xintercept = 0.58, color = "#B2182B", linetype = "dotdash", linewidth = 0.5) +
+  geom_vline(xintercept = -0.58, color = "#2166AC", linetype = "dotdash", linewidth = 0.5) +
+  geom_vline(xintercept = 0, color = "black", linetype = "solid", linewidth = 0.5) +
+  geom_hline(yintercept = 1.301, color = "grey", linetype = "dotdash", linewidth = 0.5) +
+  #coord_fixed(ratio = 0.1) +  # make plot a square, here divide total x length by y length, ignore if centered on 0 and use scale_x_continuous
+  theme(aspect.ratio=1)+
+  theme(text = element_text(family = "Arial")) + 
+  #scale_x_continuous(limits = c(-p2max_abs_x, p2max_abs_x)) + #use to center around x=0
+  theme(
+    legend.position = "none",
+        axis.text.y   = element_text(size=12, colour = "black"),
+        axis.text.x   = element_text(size=12, colour = "black"),
+        axis.title.y  = element_text(size=12, colour = "black"),
+        axis.title.x  = element_text(size=12, colour = "black"),
+        panel.background = element_blank(),
+        panel.grid.major = element_line(color = "#D3D3D380", size = 0.5),
+        panel.grid.minor = element_line(color = "#D3D3D380", size = 0.25),
+        axis.line = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill=NA, linewidth=0.5),
+        plot.title = element_markdown(size = 14, hjust = 0) # Use element_markdown to interpret Markdown in the title
+    )+  
+  xlim(-8,8) +
+  ylim(0,20)+
+  labs(title = "<b>Nucleoplasm</b> Intron Utilization", 
+       #subtitle = "RNA-seq 2 days DMSO", 
+       caption = "",
+       x = expression(atop("log"[2] * " Fold Change", "GSK591 vs DMSO")), y = expression('-log'[10]*' padj')) 
+
+print(p2)
+
+ggsave(filename = "/Users/joedeangelo/Library/CloudStorage/OneDrive-Personal/Shechter Lab/Data/RNA-seq/2024-04-22_D2GSK_FractionatedRNA/figures/240724_240724_GvD_nuc_IU_volcano.pdf", plot = p2,  width =6, height = 6, device = cairo_pdf)
+
+p3max_abs_x <- max(abs(GvD_chromatin_IU$log2FoldChange))
+p3 <-
+ggplot(GvD_chromatin_IU, 
+       aes(x = log2FoldChange, y = log10padj)) + 
+       theme(text = element_text(family = "Arial")) + 
+       geom_point(color = "#BEBEBE", size = 1, alpha = 1, shape = 16) + 
+       # geom_text_repel(data = subset(GvD_chromatin_IU,log10padj > 5 & log2FoldChange > 0.58), #for upregulated labels
+       #                aes(label=GeneSymbol),
+       #                size=3,
+       #                colour = "#B2182B",
+       #                segment.color = "#B2182B",
+       #                max.overlaps = 12,
+       #                box.padding = 0.5,
+       #                force = 30,
+       #                min.segment.length = 0,
+       #                nudge_x = 0.7,
+       #                direction = "both")+
+       #  geom_text_repel(data = subset(GvD_chromatin_IU,log10padj > 1 & log2FoldChange < -0.58), #for downregulated labels
+       #                aes(label=GeneSymbol),
+       #                size=3,
+       #                colour = "#2166AC",
+       #                segment.color = "#2166AC",
+       #                max.overlaps = 5,
+       #                box.padding = 0.5,
+       #                force = 30,
+       #                min.segment.length = 0,
+       #                #nudge_y = 0.2,
+       #                nudge_x = -0.2,
+       #                direction = "both")+
+
+  geom_point(data = . %>% filter(log10padj > 1.301 & log2FoldChange > 0.58),
+             size=1, color="#B2182B") +
+  geom_point(data = . %>% filter(log10padj > 1.301 & log2FoldChange < -0.58), 
+              size=1, color="#2166AC") +
+  # geom_point(data = . %>% filter(FC_SmBvIgG < -2 & Log2pval_SmBvIgG > 4.31), 
+  #            size=1, color="deepskyblue3") +
+  geom_vline(xintercept = 0.58, color = "#B2182B", linetype = "dotdash", linewidth = 0.5) +
+  geom_vline(xintercept = -0.58, color = "#2166AC", linetype = "dotdash", linewidth = 0.5) +
+  geom_vline(xintercept = 0, color = "black", linetype = "solid", linewidth = 0.5) +
+  geom_hline(yintercept = 1.301, color = "grey", linetype = "dotdash", linewidth = 0.5) +
+  #coord_fixed(ratio = 0.1) +  # make plot a square, here divide total x length by y length, ignore if centered on 0 and use scale_x_continuous
+  theme(aspect.ratio=1)+
+  #scale_x_continuous(limits = c(-p3max_abs_x, p3max_abs_x)) + #use to center around x=0
+  theme(
+    legend.position = "none",
+        axis.text.y   = element_text(size=12, colour = "black"),
+        axis.text.x   = element_text(size=12, colour = "black"),
+        axis.title.y  = element_text(size=12, colour = "black"),
+        axis.title.x  = element_text(size=12, colour = "black"),
+        panel.background = element_blank(),
+        panel.grid.major = element_line(color = "#D3D3D380", size = 0.5),
+        panel.grid.minor = element_line(color = "#D3D3D380", size = 0.25),
+        axis.line = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill=NA, linewidth=0.5),
+        plot.title = element_markdown(size = 14, hjust = 0) # Use element_markdown to interpret Markdown in the title
+    )+  
+  xlim(-8,8) +
+  ylim(0,20)+
+  labs(title = "<b>Chromatin</b> Intron Utilization", 
+       #subtitle = "RNA-seq 2 days DMSO", 
+       caption = "",
+       x = expression(atop("log"[2] * " Fold Change", "GSK591 vs DMSO")), y = expression('-log'[10]*' padj')) 
+
+print(p3)
+
+ggsave(filename = "/Users/joedeangelo/Library/CloudStorage/OneDrive-Personal/Shechter Lab/Data/RNA-seq/2024-04-22_D2GSK_FractionatedRNA/figures/240724_240724_GvD_chr_IU_volcano.pdf", plot = p3,  width =6, height = 6, device = cairo_pdf)
+```
+
+```{r get stats}
+library(dplyr)
+
+#calculate # of RI in cyto and nuc
+# Count the number of rows where padj < 0.05 and log2FC > 0.58
+chr_filtered <- GvD_chromatin_IU %>%
+  filter(padj < 0.05, log2FoldChange > 0.58)
+chr_count_filtered <- chr_count_filtered  %>%
+  summarize(count = n())
+
+chr_unique_gene_symbols_count <- chr_filtered %>%
+  summarize(unique_genes = n_distinct(GeneSymbol))
+
+print(chr_count_filtered)
+print(chr_unique_gene_symbols_count)
+
+cyto_filtered <- GvD_cytoplasm_IU %>%
+  filter(padj < 0.05, log2FoldChange > 0.58)
+cyto_count_filtered <- cyto_filtered  %>%
+  summarize(count = n())
+
+cyto_unique_gene_symbols_count <- cyto_filtered %>%
+  summarize(unique_genes = n_distinct(GeneSymbol))
+
+print(cyto_count_filtered)
+print(cyto_unique_gene_symbols_count)
+
+nuc_filtered <- GvD_nucleoplasm_IU %>%
+  filter(padj < 0.05, abs(log2FoldChange) > 0.58)
+nuc_count_filtered <- nuc_filtered  %>%
+  summarize(count = n())
+
+nuc_unique_gene_symbols_count <- nuc_filtered %>%
+  summarize(unique_genes = n_distinct(GeneSymbol))
+
+print(nuc_count_filtered)
+print(nuc_unique_gene_symbols_count)
+```
+
+```{r intron length}
+library(ggplot2)
+library(ggpubr)  # for stat_compare_means
+library(dplyr)
+library(stringr)
+
+GvD_chromatin_IU$log10padj <- -log10(GvD_chromatin_IU$padj)
+GvD_cytoplasm_IU$log10padj <- -log10(GvD_cytoplasm_IU$padj)
+GvD_nucleoplasm_IU$log10padj <- -log10(GvD_nucleoplasm_IU$padj)
+
+GvD_chromatin_IU <- GvD_chromatin_IU %>%
+  mutate(
+    IntronStart = as.numeric(str_extract(IntronID, "(?<=:)[0-9]+(?=:[0-9]+$)")),
+    IntronEnd   = as.numeric(str_extract(IntronID, "[0-9]+$")),
+    IntronLength = IntronEnd - IntronStart,
+    log10_IntronLength = log10(IntronLength),
+    is_significant = ifelse(
+      IntronLength <= 20, NA,
+      ifelse(log2FoldChange > 0.58 & log10padj > 1.301, "Retained", "Not Retained")
+    )
+  )
+
+GvD_nucleoplasm_IU <- GvD_nucleoplasm_IU %>%
+  mutate(
+    IntronStart = as.numeric(str_extract(IntronID, "(?<=:)[0-9]+(?=:[0-9]+$)")),
+    IntronEnd   = as.numeric(str_extract(IntronID, "[0-9]+$")),
+    IntronLength = IntronEnd - IntronStart,
+    log10_IntronLength = log10(IntronLength),
+    is_significant = ifelse(
+      IntronLength <= 20, NA,
+      ifelse(log2FoldChange > 0.58 & log10padj > 1.301, "Retained", "Not Retained")
+    )
+  )
+
+GvD_cytoplasm_IU <- GvD_cytoplasm_IU %>%
+  mutate(
+    IntronStart = as.numeric(str_extract(IntronID, "(?<=:)[0-9]+(?=:[0-9]+$)")),
+    IntronEnd   = as.numeric(str_extract(IntronID, "[0-9]+$")),
+    IntronLength = IntronEnd - IntronStart,
+    log10_IntronLength = log10(IntronLength),
+    is_significant = ifelse(
+      IntronLength <= 20, NA,
+      ifelse(log2FoldChange > 0.58 & log10padj > 1.301, "Retained", "Not Retained")
+    )
+  )
+
+
+#colors
+colors <- c("Not Retained" = "grey", "Retained" = "#229954")
+
+# Summary stat function
+stat_box_data <- function(y, upper_limit = 1.7) {
+  data.frame(
+    y = upper_limit,
+    label = paste0(
+      "count = ", length(y), "\n",
+      "median = ", round(median(y), 2)
+    )
+  )
+}
+
+#chromatin plot
+plot_chr <- ggplot(filter(GvD_chromatin_IU, !is.na(is_significant)),
+                   aes(x = is_significant, y = log10_IntronLength, fill = is_significant)) +
+  geom_violin(alpha = 0.5, orientation = "x", width = 0.9, position = position_dodge(width = 1.2)) +
+  geom_boxplot(width = 0.1, outlier.shape = NA) +
+  scale_fill_manual(values = colors) +
+  #scale_color_manual(values = colors) +
+  coord_flip() +
+  theme_classic() +
+  theme(
+    text = element_text(family = "Arial"),
+    legend.position = "none"
+  ) +
+  labs(
+    title = "Chromatin Retained Intron Length",
+    x = "", y = expression(log[10]~"(Intron Length)")
+  ) +
+  stat_compare_means(
+    comparisons = list(c("Retained", "Not Retained")),
+    method = "wilcox.test",
+    bracket.size = 0.5,
+    label = "p.signif"
+  ) +
+  stat_summary(
+    fun.data = function(y) stat_box_data(y, upper_limit = max(GvD_chromatin_IU$log10_IntronLength) * 1.05),
+    geom = "text",
+    position = position_nudge(y = -1),
+    hjust = -0.2,
+    vjust = 1.5
+  )
+
+#print(plot_chr)
+
+#nucleoplasm plot
+plot_nuc <- ggplot(filter(GvD_nucleoplasm_IU, !is.na(is_significant)),
+                   aes(x = is_significant, y = log10_IntronLength, fill = is_significant)) +
+  geom_violin(alpha = 0.5, orientation = "x", width = 0.9, position = position_dodge(width = 1.2)) +
+  geom_boxplot(width = 0.1, outlier.shape = NA) +
+  scale_fill_manual(values = colors) +
+  #scale_color_manual(values = colors) +
+  coord_flip() +
+  theme_classic() +
+  theme(
+    text = element_text(family = "Arial"),
+    legend.position = "none"
+  ) +
+  labs(
+    title = "Nucleoplasm Retained Intron Length",
+    x = "", y = expression(log[10]~"(Intron Length)")
+  ) +
+  stat_compare_means(
+    comparisons = list(c("Retained", "Not Retained")),
+    method = "wilcox.test",
+    bracket.size = 0.5,
+    label = "p.signif"
+  ) +
+  stat_summary(
+    fun.data = function(y) stat_box_data(y, upper_limit = max(GvD_nucleoplasm_IU$log10_IntronLength) * 1.05),
+    geom = "text",
+    position = position_nudge(y = -1),
+    hjust = -0.2,
+    vjust = 1.5
+  )
+
+#cytoplasm plot
+plot_cyto <- ggplot(filter(GvD_cytoplasm_IU, !is.na(is_significant)),
+                   aes(x = is_significant, y = log10_IntronLength, fill = is_significant)) +
+  geom_violin(alpha = 0.5, orientation = "x", width = 0.9, position = position_dodge(width = 1.2)) +
+  geom_boxplot(width = 0.1, outlier.shape = NA) +
+  scale_fill_manual(values = colors) +
+  #scale_color_manual(values = colors) +
+  coord_flip() +
+  theme_classic() +
+  theme(
+    text = element_text(family = "Arial"),
+    legend.position = "none"
+  ) +
+  labs(
+    title = "Cytoplasm Retained Intron Length",
+    x = "", y = expression(log[10]~"(Intron Length)")
+  ) +
+  stat_compare_means(
+    comparisons = list(c("Retained", "Not Retained")),
+    method = "wilcox.test",
+    bracket.size = 0.5,
+    label = "p.signif"
+  ) +
+  stat_summary(
+    fun.data = function(y) stat_box_data(y, upper_limit = max(GvD_cytoplasm_IU$log10_IntronLength) * 1.05),
+    geom = "text",
+   position = position_nudge(y = -1),
+    hjust = -0.2,
+    vjust = 1.5
+  )
+
+#print all plots
+print(plot_chr)
+print(plot_nuc)
+print(plot_cyto)
+
+#save plots
+ggsave(filename = paste("DeAngelo/2024 PRMT5 SNRPB Productive mRNA Release/In Progress/Analysis/IntronExonAnalysis/Chromatin_DMSOvsGSK591_log10IntronLength.pdf", sep = ""), plot = plot_chr, width = 8, heigh = 3, device = cairo_pdf)
+
+ggsave(filename = paste("DeAngelo/2024 PRMT5 SNRPB Productive mRNA Release/In Progress/Analysis/IntronExonAnalysis/Nucleoplasm_DMSOvsGSK591_log10IntronLength.pdf", sep = ""), plot = plot_nuc, width = 8, heigh = 3, device = cairo_pdf)
+
+ggsave(filename = paste("DeAngelo/2024 PRMT5 SNRPB Productive mRNA Release/In Progress/Analysis/IntronExonAnalysis/Cytoplasm_DMSOvsGSK591_log10IntronLength.pdf", sep = ""), plot = plot_cyto, width = 8, heigh = 3, device = cairo_pdf)
+
+# Wilcoxon test
+wilcox.test(log10_IntronLength ~ !is.na(is_significant), data = GvD_chromatin_IU)
+
+
+```

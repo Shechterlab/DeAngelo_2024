@@ -1,0 +1,278 @@
+---
+title: "GRIPPs and PRMT5-GRIPPs Definition and Comparative Analysis"
+author: "David Shechter"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# GRIPPs Definition and Analysis
+
+## Overview
+
+## Criteria for Defining GRIPPs
+
+This script defines and analyzes **Genomically-Retained Incompletely Processed Polyadenylated Transcripts (GRIPPs)** using RNA-seq data from A549 cells fractionated into chromatin and cytoplasmic compartments under DMSO control conditions. GRIPPs are identified as transcripts that exhibit a significant enrichment in the chromatin fraction compared to the cytoplasm, normalized using spike-in controls.
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggrepel)
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(biomaRt)
+library(GenomicRanges)
+library(AnnotationDbi)
+library(rtracklayer)
+library(data.table)
+library(eulerr)
+library(ggpubr)
+library(stringr)
+
+# Set working directory
+working_dir <- "C:/Users/david/OneDrive/Documents/GitHub/DeAngelo_2024/Figure 6/GRIPPs"
+setwd(working_dir)
+output_dir <- file.path(working_dir, "output")
+dir.create(output_dir, showWarnings = FALSE)
+
+# Input files
+DMSO_chromatin_vs_cytoplasm_file <- "../Output/DMSO_chromatin_vs_DMSO_cytoplasm_SpikeInNormalized_DESEQ2.csv"
+prmt5_chromatin_vs_cytoplasm_file <- "../Output/GSK591_chromatin_vs_GSK591_cytoplasm_SpikeInNormalized_DESEQ2.csv"
+gencode_gtf <- "../data/gencode.v48.annotation.gtf"
+chromHMM_bed <- "../data/ENCFF343YVN_A549-hg38_chromHMM-18-EtOH.bed"
+
+# Cutoffs
+cutoff <- list(log2FC = 2, padj = 0.01)
+```
+
+## Define GRIPPs and PRMT5-GRIPPs
+
+```{r define-gripps}
+dmso_res <- read.csv(DMSO_chromatin_vs_cytoplasm_file)
+gsk_res <- read.csv(prmt5_chromatin_vs_cytoplasm_file)
+
+# Strip Ensembl version suffixes if present
+dmso_res$gene_id <- gsub("\\..*", "", dmso_res$gene_id)
+gsk_res$gene_id <- gsub("\\..*", "", gsk_res$gene_id)
+
+gripps <- dplyr::filter(dmso_res, log2FoldChange > cutoff$log2FC, padj < cutoff$padj) %>%
+  dplyr::distinct(gene_id, .keep_all = TRUE)
+
+prmt5_gripps <- dplyr::filter(gsk_res, log2FoldChange > cutoff$log2FC, padj < cutoff$padj) %>%
+  dplyr::distinct(gene_id, .keep_all = TRUE)
+
+# Diagnostic: Check overlap with GTF
+gtf <- import(gencode_gtf)
+gtf$gene_id <- gsub("\\..*", "", gtf$gene_id)
+gtf_gene_ids <- unique(gtf$gene_id)
+cat("GRIPPs gene IDs:", length(unique(gripps$gene_id)), "
+")
+cat("PRMT5-GRIPPs gene IDs:", length(unique(prmt5_gripps$gene_id)), "
+")
+cat("GRIPPs matched in GTF:", length(intersect(gripps$gene_id, gtf_gene_ids)), "
+")
+cat("PRMT5-GRIPPs matched in GTF:", length(intersect(prmt5_gripps$gene_id, gtf_gene_ids)), "
+")
+
+write.csv(gripps, file.path(output_dir, "GRIPPs.csv"), row.names = FALSE)
+write.csv(prmt5_gripps, file.path(output_dir, "PRMT5-GRIPPs.csv"), row.names = FALSE)
+```
+
+## Overlap of GRIPPs and PRMT5-GRIPPs
+
+```{r venn-diagram}
+venn_counts <- list(GRIPPs = gripps$gene_id, `PRMT5-GRIPPs` = prmt5_gripps$gene_id)
+eul <- euler(venn_counts)
+
+venn_plot <- plot(eul, 
+                  fills = list(fill = c("gray", "#2D8942"), alpha = 0.8), 
+                  quantities = TRUE, 
+                  labels = list(font = 4))
+
+
+print(venn_plot)
+
+ggsave(file.path(output_dir, "venn_GRIPPs_PRMT5-GRIPPs.pdf"), plot = venn_plot, device = "pdf", width = 5, height = 5)
+
+```
+
+## Generate BED Files for Each Group Separately
+
+```{r generate-intron-bed}
+#gtf <- import(gencode_gtf)
+#gtf imported and fixed above
+
+exons <- gtf[gtf$type == "exon"]
+
+# Calculate introns once for all genes with exons
+gtf$gene_id <- gsub("\\..*", "", gtf$gene_id)
+exons$gene_id <- gsub("\\..*", "", exons$gene_id)
+
+all_gene_ids <- unique(c(gripps$gene_id, prmt5_gripps$gene_id))
+exons_by_gene <- split(exons[exons$gene_id %in% all_gene_ids], exons$gene_id)
+
+introns_list <- lapply(names(exons_by_gene), function(gid) {
+  gr <- exons_by_gene[[gid]]
+  gr <- sort(gr)
+  if (length(gr) < 2) return(NULL)
+  gaps_gr <- gaps(gr)
+  gaps_gr <- gaps_gr[strand(gaps_gr) == strand(gr)[1] & seqnames(gaps_gr) == seqnames(gr)[1]]
+  gaps_gr <- gaps_gr[start(gaps_gr) >= min(start(gr)) & end(gaps_gr) <= max(end(gr))]
+  if (length(gaps_gr) == 0) return(NULL)
+  mcols(gaps_gr)$gene_id <- gid
+  return(gaps_gr)
+})
+
+introns_list <- introns_list[!sapply(introns_list, is.null)]
+introns_combined <- do.call(c, introns_list)
+export.bed(introns_combined, file.path(output_dir, "All_introns.bed"))
+
+# Subset for each group
+gripps_introns <- introns_combined[mcols(introns_combined)$gene_id %in% gripps$gene_id]
+prmt5_introns <- introns_combined[mcols(introns_combined)$gene_id %in% prmt5_gripps$gene_id]
+
+export.bed(gripps_introns, file.path(output_dir, "GRIPPs_introns.bed"))
+export.bed(prmt5_introns, file.path(output_dir, "PRMT5-GRIPPs_introns.bed"))
+```
+
+```{r generate-promoter-bed}
+
+tx <- gtf[gtf$type == "transcript"]
+get_promoters_bed <- function(gene_ids, label) {
+  tx_subset <- tx[tx$gene_id %in% gene_ids]
+  if (length(tx_subset) == 0) return(NULL)
+  tx_promoters <- promoters(tx_subset, upstream = 500, downstream = 500)
+  tx_promoters <- tx_promoters[!duplicated(tx_promoters$gene_id)]
+  if (length(tx_promoters) == 0) return(NULL)
+  promoter_df <- as.data.frame(tx_promoters)[,c("seqnames", "start", "end")]
+  promoter_df$gene_id <- tx_promoters$gene_id
+  promoter_df$gene_symbol <- tx_promoters$gene_name
+  promoter_df$strand <- as.character(strand(tx_promoters))
+  write.table(promoter_df, file.path(output_dir, paste0(label, "_promoters.bed")),
+              sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+}
+
+get_promoters_bed(gripps$gene_id, "GRIPPs")
+get_promoters_bed(prmt5_gripps$gene_id, "PRMT5-GRIPPs")
+
+
+```
+
+
+## GO Enrichment and Gene Biotype Summary
+
+```{r go-enrichment}
+# Convert gene IDs to ENTREZ for clusterProfiler
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(biomaRt)
+
+# ID conversion
+gene_conversion <- bitr(
+  unique(c(gripps$gene_id, prmt5_gripps$gene_id)),
+  fromType = "ENSEMBL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+# Add group label
+gene_conversion$group <- ifelse(
+  gene_conversion$ENSEMBL %in% gripps$gene_id,
+  "GRIPPs", "PRMT5-GRIPPs"
+)
+
+# CompareCluster for BP, MF, CC
+cc_bp <- compareCluster(
+  ENTREZID ~ group,
+  data = gene_conversion,
+  fun = "enrichGO",
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+cc_mf <- compareCluster(
+  ENTREZID ~ group,
+  data = gene_conversion,
+  fun = "enrichGO",
+  OrgDb = org.Hs.eg.db,
+  ont = "MF",
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+cc_cc <- compareCluster(
+  ENTREZID ~ group,
+  data = gene_conversion,
+  fun = "enrichGO",
+  OrgDb = org.Hs.eg.db,
+  ont = "CC",
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+# KEGG pathway enrichment
+kegg_cc <- compareCluster(
+  ENTREZID ~ group,
+  data = gene_conversion,
+  fun = "enrichKEGG",
+  organism = "hsa",
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05
+)
+
+# Plot and save
+plots <- list(
+  BP = cc_bp,
+  MF = cc_mf,
+  CC = cc_cc,
+  KEGG = kegg_cc
+)
+
+for (ont in names(plots)) {
+  p <- enrichplot::dotplot(plots[[ont]], showCategory = 8) +
+    ggtitle(paste("Enrichment:", ont, "- GRIPPs vs PRMT5-GRIPPs"))
+  print(p)
+  ggsave(file.path(output_dir, paste0("GO_compare_", ont, "_GRIPPs_PRMT5-GRIPPs.pdf")),
+         plot = p, width = 8, height = 6)
+}
+```
+
+```{r gene-biotype-summary}
+# Get gene biotypes
+mart <- useMart("ENSEMBL_MART_ENSEMBL", dataset = "hsapiens_gene_ensembl", host = "https://www.ensembl.org")
+
+biotypes <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol", "gene_biotype"),
+  filters = "ensembl_gene_id",
+  values = unique(c(gripps$gene_id, prmt5_gripps$gene_id)),
+  mart = mart
+)
+
+biotypes$Group <- ifelse(biotypes$ensembl_gene_id %in% gripps$gene_id, "GRIPPs", "PRMT5-GRIPPs")
+
+# Collapse gene types for display
+summary_df <- biotypes %>%
+  dplyr::mutate(
+    RNA_Class = case_when(
+      grepl("pseudogene", gene_biotype, ignore.case = TRUE) ~ "Pseudogene",
+      gene_biotype == "TEC" ~ "TEC",
+      gene_biotype == "lncRNA" ~ "lncRNA",
+      gene_biotype == "protein_coding" ~ "protein_coding",
+      TRUE ~ "other"
+    )
+  ) %>%
+  dplyr::group_by(Group, RNA_Class) %>%
+  dplyr::summarise(Count = dplyr::n()) %>%
+  dplyr::mutate(Percentage = 100 * Count / sum(Count))
+
+# Generate the stacked bar plot
+S
+
+```
